@@ -1,0 +1,72 @@
+experiment:
+  name: source_brats_gli_plain_unet3d
+  output_dir: outputs/source_brats_gli_plain_unet3d
+  seed: 2025
+  deterministic: false
+
+data:
+  # Replace these with manifests created by brats-preprocess.
+  train_manifest: data/manifests/gli_train_preprocessed.json
+  val_manifest: data/manifests/gli_val_preprocessed.json
+  label_schema: brats_modern  # ET=3; use brats_legacy when ET=4
+  patch_size: [128, 128, 128]
+  num_workers: 4
+  pin_memory: true
+  augmentation:
+    foreground_oversample: 0.33
+    flip_probability: 0.5
+    intensity_scale_range: [0.9, 1.1]
+    intensity_shift_range: [-0.1, 0.1]
+    noise_probability: 0.15
+    noise_std_range: [0.0, 0.1]
+
+model:
+  name: plain_unet3d
+  in_channels: 4
+  out_channels: 3
+  features: [32, 64, 128, 256, 320]
+  convs_per_stage: 2
+  deep_supervision: true
+  norm: instance3d
+  norm_eps: 1.0e-5
+  norm_affine: true
+  track_running_stats: false
+  activation: leaky_relu
+  negative_slope: 0.01
+  dropout: 0.0
+
+loss:
+  dice_weight: 1.0
+  bce_weight: 1.0
+  hierarchy_weight: 0.0
+  smooth: 1.0e-5
+  batch_dice: false
+  # Outputs are 128^3, 64^3, 32^3 and 16^3. The lowest output is not supervised.
+  deep_supervision_weights: [1.0, 0.5, 0.25, 0.0]
+
+training:
+  device: auto
+  batch_size: 2
+  epochs: 1000
+  iterations_per_epoch: 250
+  validate_every: 10
+  save_every: 50
+  validation_cases: null
+  optimizer: sgd
+  learning_rate: 0.01
+  momentum: 0.99
+  nesterov: true
+  weight_decay: 3.0e-5
+  poly_exponent: 0.9
+  gradient_clip_norm: 12.0
+  amp: true
+
+inference:
+  patch_size: [128, 128, 128]
+  overlap: 0.5
+  sw_batch_size: 1
+  gaussian_weighting: true
+  amp: true
+  threshold: 0.5
+  enforce_hierarchy: true
+

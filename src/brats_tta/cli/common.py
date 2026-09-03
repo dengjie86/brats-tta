@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import torch
+
+from brats_tta.models import build_source_model
+from brats_tta.utils.checkpoint import load_checkpoint
+
+
+def configure_logging(verbose: bool = False) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+
+def load_model_from_checkpoint(
+    checkpoint_path: str,
+    device: torch.device,
+    config_override: dict[str, Any] | None = None,
+) -> tuple[torch.nn.Module, dict[str, Any], dict[str, Any]]:
+    checkpoint = load_checkpoint(checkpoint_path, device)
+    config = config_override or checkpoint.get("config")
+    if not isinstance(config, dict):
+        raise ValueError("checkpoint has no embedded config; pass --config")
+    model = build_source_model(config["model"]).to(device)
+    model.load_state_dict(checkpoint["model"], strict=True)
+    model.eval()
+    return model, config, checkpoint

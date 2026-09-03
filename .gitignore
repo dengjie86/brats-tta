@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Experiment artifacts and medical images
+outputs/
+checkpoints/
+logs/
+data/
+*.nii
+*.nii.gz
+*.pt
+*.pth
+*.ckpt
+
+# Editors and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

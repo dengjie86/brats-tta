@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brats-tta"
+version = "0.1.0"
+description = "Source-domain 3D U-Net baseline and TTA-ready framework for BraTS GLI, SSA and PED."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "torch>=2.2",
+    "nibabel>=5.1",
+    "PyYAML>=6.0",
+    "scipy>=1.10",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+tensorboard = ["tensorboard>=2.15"]
+
+[project.scripts]
+brats-prepare-manifest = "brats_tta.cli.prepare_manifest:main"
+brats-preprocess = "brats_tta.cli.preprocess:main"
+brats-train-source = "brats_tta.cli.train_source:main"
+brats-evaluate-source = "brats_tta.cli.evaluate_source:main"
+brats-infer = "brats_tta.cli.infer:main"
+brats-inspect-model = "brats_tta.cli.inspect_model:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
