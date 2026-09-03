@@ -137,7 +137,7 @@ def main() -> None:
             context.distributed,
             context.world_size,
         )
-        LOGGER.info("Model parameters: %,d", parameter_count)
+        LOGGER.info("Model parameters: %s", f"{parameter_count:,}")
         LOGGER.info("Training manifest: %s", config["data"]["train_manifest"])
         LOGGER.info("Validation manifest: %s", config["data"]["val_manifest"])
         LOGGER.info("Output directory: %s", config["experiment"]["output_dir"])
