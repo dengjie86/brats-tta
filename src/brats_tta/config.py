@@ -112,6 +112,10 @@ def validate_config(config: dict[str, Any]) -> None:
     for key in ("batch_size", "epochs", "iterations_per_epoch", "validate_every", "save_every"):
         if int(training.get(key, 1)) <= 0:
             raise ValueError(f"training.{key} must be positive")
+    if int(training.get("log_every", 10)) <= 0:
+        raise ValueError("training.log_every must be positive")
+    if int(training.get("validation_log_every", 10)) <= 0:
+        raise ValueError("training.validation_log_every must be positive")
 
 
 def save_config_snapshot(config: dict[str, Any], destination: str | Path) -> None:

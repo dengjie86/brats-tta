@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import TypeVar, cast
 
 import torch
 import torch.distributed as dist
@@ -9,6 +10,8 @@ from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 
 from brats_tta.utils.reproducibility import resolve_device
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,13 @@ class DistributedContext:
         if self.distributed:
             dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         return tensor
+
+    def all_gather_objects(self, value: T) -> list[T]:
+        if not self.distributed:
+            return [value]
+        gathered: list[T | None] = [None] * self.world_size
+        dist.all_gather_object(gathered, value)
+        return cast(list[T], gathered)
 
     def close(self) -> None:
         if self.distributed and dist.is_initialized():

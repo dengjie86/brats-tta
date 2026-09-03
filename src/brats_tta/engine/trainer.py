@@ -80,6 +80,8 @@ class SourceTrainer:
         validate_every = int(self.training_config.get("validate_every", 10))
         save_every = int(self.training_config.get("save_every", 50))
         for epoch in range(self.start_epoch, number_of_epochs):
+            if self.distributed.is_main_process:
+                LOGGER.info("Epoch %d/%d started", epoch + 1, number_of_epochs)
             start_time = perf_counter()
             training_metrics = self.train_epoch(epoch)
             self.scheduler.step()
@@ -91,13 +93,22 @@ class SourceTrainer:
             }
 
             should_validate = (epoch + 1) % validate_every == 0 or epoch == number_of_epochs - 1
-            if should_validate and self.distributed.is_main_process:
+            if should_validate:
+                validation_start = perf_counter()
+                if self.distributed.is_main_process:
+                    LOGGER.info(
+                        "Epoch %d validation started across %d process(es)",
+                        epoch + 1,
+                        self.distributed.world_size,
+                    )
                 validation_metrics = self.validate()
-                record.update({f"val_{key}": value for key, value in validation_metrics.items()})
-                current_dice = validation_metrics["dice_mean"]
-                if current_dice > self.best_dice:
-                    self.best_dice = current_dice
-                    self._save(epoch, "best.pt")
+                if self.distributed.is_main_process:
+                    record["val_seconds"] = perf_counter() - validation_start
+                    record.update({f"val_{key}": value for key, value in validation_metrics.items()})
+                    current_dice = validation_metrics["dice_mean"]
+                    if current_dice > self.best_dice:
+                        self.best_dice = current_dice
+                        self._save(epoch, "best.pt")
 
             if self.distributed.is_main_process:
                 if (epoch + 1) % save_every == 0 or epoch == number_of_epochs - 1:
@@ -115,6 +126,7 @@ class SourceTrainer:
         self._set_sampler_epoch(epoch, cycle, iterations)
         iterator = iter(self.training_loader)
         running_loss = 0.0
+        log_every = int(self.training_config.get("log_every", 10))
         progress = tqdm(
             range(iterations),
             desc="source train",
@@ -148,20 +160,38 @@ class SourceTrainer:
             self.scaler.update()
             running_loss += float(loss.detach().item())
             progress.set_postfix(loss=f"{running_loss / (_ + 1):.4f}")
+            if self.distributed.is_main_process and ((_ + 1) % log_every == 0 or _ + 1 == iterations):
+                LOGGER.info(
+                    "Epoch %d train iteration %d/%d: loss=%.4f",
+                    epoch + 1,
+                    _ + 1,
+                    iterations,
+                    running_loss / (_ + 1),
+                )
         totals = torch.tensor([running_loss, float(iterations)], device=self.device, dtype=torch.float64)
         self.distributed.sum_tensor(totals)
         return {"train_loss": float((totals[0] / totals[1]).item())}
 
     @torch.no_grad()
     def validate(self) -> dict[str, float]:
-        if not self.distributed.is_main_process:
-            raise RuntimeError("validation must only run on rank 0")
         validation_model = unwrap_model(self.model)
         validation_model.eval()
         case_metrics: list[dict[str, float]] = []
         maximum_cases = self.training_config.get("validation_cases")
-        for case_index, batch in enumerate(tqdm(self.validation_loader, desc="validation", leave=False)):
-            if maximum_cases is not None and case_index >= int(maximum_cases):
+        validation_log_every = int(self.training_config.get("validation_log_every", 10))
+        progress = tqdm(
+            self.validation_loader,
+            desc="validation",
+            leave=False,
+            disable=not self.distributed.is_main_process,
+        )
+        for local_case_index, batch in enumerate(progress):
+            global_case_index = (
+                self.distributed.rank + local_case_index * self.distributed.world_size
+                if self.distributed.distributed
+                else local_case_index
+            )
+            if maximum_cases is not None and global_case_index >= int(maximum_cases):
                 break
             image = batch["image"].to(self.device, non_blocking=True)
             target = batch["target"].to(self.device, non_blocking=True)
@@ -184,6 +214,18 @@ class SourceTrainer:
                     threshold=self.inference_config.get("threshold", 0.5),
                 )
             )
+            processed_cases = local_case_index + 1
+            if self.distributed.is_main_process and (
+                processed_cases % validation_log_every == 0
+                or processed_cases == len(self.validation_loader)
+            ):
+                LOGGER.info(
+                    "Validation rank 0 local cases %d/%d",
+                    processed_cases,
+                    len(self.validation_loader),
+                )
+        gathered_metrics = self.distributed.all_gather_objects(case_metrics)
+        case_metrics = [metrics for rank_metrics in gathered_metrics for metrics in rank_metrics]
         if not case_metrics:
             raise RuntimeError("validation manifest contains no labeled cases")
         return aggregate_metric_dicts(case_metrics)

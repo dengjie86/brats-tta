@@ -169,7 +169,7 @@ DATA_ROOT=/kaggle/input/datasets/vietanh21/brats-2021-task-1-dataset \
   bash scripts/kaggle_train_2gpu.sh
 ```
 
-如果 Kaggle 实际挂载为常见的 `/kaggle/input/brats-2021-task-1-dataset`，脚本也会自动回退到该位置。DDP 只由 rank 0 验证、记录日志和保存 checkpoint；保存的模型没有 `module.` 前缀，可以直接用于单卡评估和推理。
+如果 Kaggle 实际挂载为常见的 `/kaggle/input/brats-2021-task-1-dataset`，脚本也会自动回退到该位置。DDP 会把验证病例无重复地分配到两张卡，指标汇总、记录日志和保存 checkpoint 则只由 rank 0 执行；保存的模型没有 `module.` 前缀，可以直接用于单卡评估和推理。训练阶段默认每 10 个 iteration 输出一条普通文本日志。
 
 双卡任务从 checkpoint 续训时，`EPOCHS` 仍表示目标总 epoch 数：
 

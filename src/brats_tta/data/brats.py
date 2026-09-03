@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.data.distributed import DistributedSampler
 
 from brats_tta.data.manifest import load_manifest
@@ -87,6 +88,26 @@ class BraTSDataset(Dataset[dict[str, Any]]):
         return image, target
 
 
+class DistributedEvalSampler(Sampler[int]):
+    """Shard evaluation cases across ranks without padding or duplication."""
+
+    def __init__(self, dataset: Dataset[Any], *, num_replicas: int, rank: int) -> None:
+        if num_replicas <= 0:
+            raise ValueError("num_replicas must be positive")
+        if not 0 <= rank < num_replicas:
+            raise ValueError(f"rank must be in [0, {num_replicas}), got {rank}")
+        self.dataset = dataset
+        self.num_replicas = num_replicas
+        self.rank = rank
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(range(self.rank, len(self.dataset), self.num_replicas))
+
+    def __len__(self) -> int:
+        remaining = len(self.dataset) - self.rank
+        return 0 if remaining <= 0 else (remaining + self.num_replicas - 1) // self.num_replicas
+
+
 def build_dataloaders(
     config: dict[str, Any],
     distributed_context: DistributedContext | None = None,
@@ -135,6 +156,11 @@ def build_dataloaders(
         if is_distributed
         else None
     )
+    validation_sampler = (
+        DistributedEvalSampler(validation_dataset, num_replicas=world_size, rank=rank)
+        if is_distributed
+        else None
+    )
     training_loader = DataLoader(
         training_dataset,
         batch_size=batch_size,
@@ -148,6 +174,7 @@ def build_dataloaders(
         validation_dataset,
         batch_size=1,
         shuffle=False,
+        sampler=validation_sampler,
         drop_last=False,
         generator=validation_generator,
         **common,

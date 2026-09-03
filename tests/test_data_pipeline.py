@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from brats_tta.data.brats import BraTSDataset
+from brats_tta.data.brats import BraTSDataset, DistributedEvalSampler
 from brats_tta.data.manifest import discover_brats_cases, load_manifest, split_cases, write_manifest
 from brats_tta.data.preprocessing import preprocess_manifest
 
@@ -139,3 +139,14 @@ def test_nested_kaggle_brats2021_layout(tmp_path: Path) -> None:
     assert sample["target"].shape == (3, 9, 10, 11)
     assert torch.all(sample["target"][0] <= sample["target"][1])
     assert torch.all(sample["target"][1] <= sample["target"][2])
+
+
+def test_distributed_eval_sampler_has_no_padding_or_duplicates() -> None:
+    dataset = list(range(7))
+    shards = [
+        list(DistributedEvalSampler(dataset, num_replicas=3, rank=rank))
+        for rank in range(3)
+    ]
+
+    assert shards == [[0, 3, 6], [1, 4], [2, 5]]
+    assert sorted(index for shard in shards for index in shard) == list(range(7))

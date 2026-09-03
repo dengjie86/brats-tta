@@ -52,6 +52,8 @@ training:
   validate_every: 10
   save_every: 50
   validation_cases: null
+  log_every: 10
+  validation_log_every: 10
   optimizer: sgd
   learning_rate: 0.01
   momentum: 0.99
@@ -69,4 +71,3 @@ inference:
   amp: true
   threshold: 0.5
   enforce_hierarchy: true
-

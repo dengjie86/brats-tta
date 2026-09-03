@@ -177,4 +177,7 @@ def test_two_process_ddp_train_validate_and_checkpoint(tmp_path: Path) -> None:
     PlainUNet3D(features=(2, 4, 8)).load_state_dict(checkpoint["model"], strict=True)
     history_lines = (output_directory / "history.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(history_lines) == 1
-    assert json.loads(history_lines[0])["epoch"] == 0
+    history_record = json.loads(history_lines[0])
+    assert history_record["epoch"] == 0
+    assert "val_dice_mean" in history_record
+    assert "val_seconds" in history_record
