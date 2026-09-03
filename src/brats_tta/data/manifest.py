@@ -12,7 +12,14 @@ DEFAULT_SUFFIXES: dict[str, tuple[str, ...]] = {
     "t1c": ("-t1c.nii.gz", "_t1c.nii.gz", "_t1ce.nii.gz", "-t1c.nii", "_t1ce.nii"),
     "t2w": ("-t2w.nii.gz", "_t2w.nii.gz", "_t2.nii.gz", "-t2w.nii", "_t2.nii"),
     "t2f": ("-t2f.nii.gz", "_t2f.nii.gz", "_flair.nii.gz", "-t2f.nii", "_flair.nii"),
-    "label": ("-seg.nii.gz", "_seg.nii.gz", "-seg.nii", "_seg.nii"),
+    "label": (
+        "-seg.nii.gz",
+        "_seg.nii.gz",
+        "_seg_new.nii.gz",
+        "-seg.nii",
+        "_seg.nii",
+        "_seg_new.nii",
+    ),
 }
 
 

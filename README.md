@@ -162,7 +162,7 @@ torchrun --standalone --nproc-per-node=2 \
   --set data.label_schema=brats_legacy
 ```
 
-截图所示的 Kaggle 数据把每个模态放在名为 `*.nii` 的子目录，真实 NIfTI 再位于下一层。manifest 扫描器会递归聚合到共同的 `BraTS2021_XXXXX` 病例目录，因此可以直接运行一键脚本：
+截图所示的 Kaggle 数据把每个模态放在名为 `*.nii` 的子目录，真实 NIfTI 再位于下一层。manifest 扫描器会递归聚合到共同的 `BraTS2021_XXXXX` 病例目录，并同时识别该镜像中的 `*_final_seg.nii` 与 `*_seg_new.nii` 标签，因此可以直接运行一键脚本：
 
 ```bash
 DATA_ROOT=/kaggle/input/datasets/vietanh21/brats-2021-task-1-dataset \

@@ -60,7 +60,8 @@ def _write_nested_legacy_case(root: Path, case_id: str) -> None:
     label[2:7, 2:8, 2:9] = 2
     label[3:6, 3:7, 3:8] = 1
     label[4:5, 4:6, 4:7] = 4
-    nib.save(nib.Nifti1Image(label, affine), label_directory / "00000057_final_seg.nii")
+    # This Kaggle mirror uses the revised *_seg_new.nii name for 235 cases.
+    nib.save(nib.Nifti1Image(label, affine), label_directory / f"{case_id}_seg_new.nii")
 
 
 def test_manifest_preprocess_and_dataset(tmp_path: Path) -> None:
