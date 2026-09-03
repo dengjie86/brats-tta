@@ -34,6 +34,35 @@ def _write_case(root: Path, case_id: str, *, with_label: bool = True) -> None:
         nib.save(nib.Nifti1Image(label, affine), case_directory / f"{case_id}-seg.nii.gz")
 
 
+def _write_nested_legacy_case(root: Path, case_id: str) -> None:
+    case_directory = root / case_id
+    shape = (9, 10, 11)
+    affine = np.eye(4)
+    legacy_names = {
+        "t1": 1.0,
+        "t1ce": 2.0,
+        "t2": 3.0,
+        "flair": 4.0,
+    }
+    for legacy_name, value in legacy_names.items():
+        modality_directory = case_directory / f"{case_id}_{legacy_name}.nii"
+        modality_directory.mkdir(parents=True)
+        image = np.zeros(shape, dtype=np.float32)
+        image[1:-1, 1:-1, 1:-1] = value
+        nib.save(
+            nib.Nifti1Image(image, affine),
+            modality_directory / f"00000057_brain_{legacy_name}.nii",
+        )
+
+    label_directory = case_directory / f"{case_id}_seg.nii"
+    label_directory.mkdir(parents=True)
+    label = np.zeros(shape, dtype=np.uint8)
+    label[2:7, 2:8, 2:9] = 2
+    label[3:6, 3:7, 3:8] = 1
+    label[4:5, 4:6, 4:7] = 4
+    nib.save(nib.Nifti1Image(label, affine), label_directory / "00000057_final_seg.nii")
+
+
 def test_manifest_preprocess_and_dataset(tmp_path: Path) -> None:
     raw_root = tmp_path / "raw"
     _write_case(raw_root, "Case-001")
@@ -88,3 +117,24 @@ def test_unlabeled_target_case_can_be_collated(tmp_path: Path) -> None:
     batch = next(iter(loader))
     assert batch["label"] == [""]
     assert batch["target"].shape == (1, 0, 9, 10, 11)
+
+
+def test_nested_kaggle_brats2021_layout(tmp_path: Path) -> None:
+    raw_root = tmp_path / "BRaTS 2021 Task 1 Dataset"
+    _write_nested_legacy_case(raw_root, "BraTS2021_00000")
+
+    cases = discover_brats_cases(raw_root)
+    assert len(cases) == 1
+    assert cases[0]["id"] == "BraTS2021_00000"
+    assert Path(cases[0]["images"]["t1n"]).name.endswith("_brain_t1.nii")
+    assert Path(cases[0]["images"]["t1c"]).name.endswith("_brain_t1ce.nii")
+    assert Path(cases[0]["images"]["t2w"]).name.endswith("_brain_t2.nii")
+    assert Path(cases[0]["images"]["t2f"]).name.endswith("_brain_flair.nii")
+
+    manifest_path = tmp_path / "nested.json"
+    write_manifest(cases, manifest_path, metadata={"label_schema": "brats_legacy"})
+    sample = BraTSDataset(manifest_path, training=False)[0]
+    assert sample["image"].shape == (4, 9, 10, 11)
+    assert sample["target"].shape == (3, 9, 10, 11)
+    assert torch.all(sample["target"][0] <= sample["target"][1])
+    assert torch.all(sample["target"][1] <= sample["target"][2])

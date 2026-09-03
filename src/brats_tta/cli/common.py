@@ -9,10 +9,11 @@ from brats_tta.models import build_source_model
 from brats_tta.utils.checkpoint import load_checkpoint
 
 
-def configure_logging(verbose: bool = False) -> None:
+def configure_logging(verbose: bool = False, *, rank: int = 0) -> None:
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        level=(logging.DEBUG if verbose else logging.INFO) if rank == 0 else logging.WARNING,
+        format=f"%(asctime)s | rank={rank} | %(levelname)s | %(name)s | %(message)s",
+        force=True,
     )
 
 

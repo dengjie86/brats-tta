@@ -145,6 +145,40 @@ checkpoints/best.pt
 checkpoints/epoch_XXXX.pt
 ```
 
+### Kaggle 双 T4 和 BraTS 2021 嵌套目录
+
+项目支持 `torchrun` 启动的 DistributedDataParallel。`--batch-size` 表示每个进程、每张 GPU 的 batch；两张 T4 使用每卡 1，得到全局 batch 2。训练集由 `DistributedSampler` 划分，两张卡不会重复读取同一批样本：
+
+```bash
+torchrun --standalone --nproc-per-node=2 \
+  -m brats_tta.cli.train_source \
+  --config configs/source_brats_gli.yaml \
+  --train-manifest /kaggle/working/brats2021_source_ddp/manifests/gli_train_raw.json \
+  --val-manifest /kaggle/working/brats2021_source_ddp/manifests/gli_val_raw.json \
+  --output-dir /kaggle/working/brats2021_source_ddp/run \
+  --batch-size 1 \
+  --device cuda \
+  --amp \
+  --set data.label_schema=brats_legacy
+```
+
+截图所示的 Kaggle 数据把每个模态放在名为 `*.nii` 的子目录，真实 NIfTI 再位于下一层。manifest 扫描器会递归聚合到共同的 `BraTS2021_XXXXX` 病例目录，因此可以直接运行一键脚本：
+
+```bash
+DATA_ROOT=/kaggle/input/datasets/vietanh21/brats-2021-task-1-dataset \
+  bash scripts/kaggle_train_2gpu.sh
+```
+
+如果 Kaggle 实际挂载为常见的 `/kaggle/input/brats-2021-task-1-dataset`，脚本也会自动回退到该位置。DDP 只由 rank 0 验证、记录日志和保存 checkpoint；保存的模型没有 `module.` 前缀，可以直接用于单卡评估和推理。
+
+双卡任务从 checkpoint 续训时，`EPOCHS` 仍表示目标总 epoch 数：
+
+```bash
+EPOCHS=1000 \
+RESUME_CHECKPOINT=/kaggle/input/your-checkpoint/latest.pt \
+  bash scripts/kaggle_train_2gpu.sh
+```
+
 断点续训：
 
 ```powershell

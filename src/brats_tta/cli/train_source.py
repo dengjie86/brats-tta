@@ -11,7 +11,8 @@ from brats_tta.data import build_dataloaders
 from brats_tta.engine import SourceTrainer
 from brats_tta.losses.segmentation import build_loss
 from brats_tta.models import build_source_model
-from brats_tta.utils.reproducibility import resolve_device, seed_everything
+from brats_tta.utils.distributed import initialize_distributed
+from brats_tta.utils.reproducibility import seed_everything
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     paths.add_argument("--output-dir", help="Override experiment.output_dir")
 
     training = parser.add_argument_group("common training overrides")
-    training.add_argument("--batch-size", type=int)
+    training.add_argument("--batch-size", type=int, help="Batch size per process/GPU")
     training.add_argument("--epochs", type=int, help="Total number of epochs, not additional epochs")
     training.add_argument("--iterations-per-epoch", type=int)
     training.add_argument("--learning-rate", type=float)
@@ -110,50 +111,65 @@ def apply_train_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
 
 def main() -> None:
     args = build_parser().parse_args()
-    configure_logging(args.verbose)
     config = apply_train_cli_overrides(load_config(args.config), args)
-    seed = int(config["experiment"].get("seed", 2025))
-    seed_everything(seed, deterministic=config["experiment"].get("deterministic", False))
-    device = resolve_device(config["training"].get("device", "auto"))
-    if hasattr(torch, "set_float32_matmul_precision"):
-        torch.set_float32_matmul_precision("high")
+    context = initialize_distributed(config["training"].get("device", "auto"))
+    configure_logging(args.verbose, rank=context.rank)
+    try:
+        seed = int(config["experiment"].get("seed", 2025))
+        seed_everything(
+            seed + context.rank,
+            deterministic=config["experiment"].get("deterministic", False),
+        )
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
 
-    model = build_source_model(config["model"])
-    number_of_outputs = (
-        len(config["model"]["features"]) - 1 if config["model"].get("deep_supervision", True) else 1
-    )
-    loss_function = build_loss(config["loss"], number_of_outputs)
-    training_loader, validation_loader = build_dataloaders(config)
-    LOGGER.info("Device: %s", device)
-    LOGGER.info("Model parameters: %,d", model.parameter_count())
-    LOGGER.info("Training manifest: %s", config["data"]["train_manifest"])
-    LOGGER.info("Validation manifest: %s", config["data"]["val_manifest"])
-    LOGGER.info("Output directory: %s", config["experiment"]["output_dir"])
-    LOGGER.info(
-        "Training setup: patch=%s, batch=%d, epochs=%d, iterations/epoch=%d, amp=%s",
-        config["data"]["patch_size"],
-        config["training"]["batch_size"],
-        config["training"]["epochs"],
-        config["training"]["iterations_per_epoch"],
-        config["training"].get("amp", True),
-    )
-    LOGGER.info(
-        "Training cases: %d; validation cases: %d",
-        len(training_loader.dataset),
-        len(validation_loader.dataset),
-    )
+        model = build_source_model(config["model"])
+        parameter_count = model.parameter_count()
+        number_of_outputs = (
+            len(config["model"]["features"]) - 1 if config["model"].get("deep_supervision", True) else 1
+        )
+        loss_function = build_loss(config["loss"], number_of_outputs)
+        training_loader, validation_loader = build_dataloaders(config, context)
+        per_device_batch = int(config["training"]["batch_size"])
+        LOGGER.info(
+            "Runtime: device=%s, distributed=%s, world_size=%d",
+            context.device,
+            context.distributed,
+            context.world_size,
+        )
+        LOGGER.info("Model parameters: %,d", parameter_count)
+        LOGGER.info("Training manifest: %s", config["data"]["train_manifest"])
+        LOGGER.info("Validation manifest: %s", config["data"]["val_manifest"])
+        LOGGER.info("Output directory: %s", config["experiment"]["output_dir"])
+        LOGGER.info(
+            "Training setup: patch=%s, batch/GPU=%d, global_batch=%d, epochs=%d, iterations/epoch=%d, amp=%s",
+            config["data"]["patch_size"],
+            per_device_batch,
+            per_device_batch * context.world_size,
+            config["training"]["epochs"],
+            config["training"]["iterations_per_epoch"],
+            config["training"].get("amp", True),
+        )
+        LOGGER.info(
+            "Training cases: %d; validation cases: %d",
+            len(training_loader.dataset),
+            len(validation_loader.dataset),
+        )
 
-    trainer = SourceTrainer(
-        model=model,
-        loss_function=loss_function,
-        training_loader=training_loader,
-        validation_loader=validation_loader,
-        config=config,
-        device=device,
-    )
-    if args.resume:
-        trainer.resume(args.resume)
-    trainer.fit()
+        trainer = SourceTrainer(
+            model=model,
+            loss_function=loss_function,
+            training_loader=training_loader,
+            validation_loader=validation_loader,
+            config=config,
+            device=context.device,
+            distributed_context=context,
+        )
+        if args.resume:
+            trainer.resume(args.resume)
+        trainer.fit()
+    finally:
+        context.close()
 
 
 if __name__ == "__main__":

@@ -10,10 +10,10 @@ build/
 dist/
 
 # Experiment artifacts and medical images
-outputs/
-checkpoints/
-logs/
-data/
+/outputs/
+/checkpoints/
+/logs/
+/data/
 *.nii
 *.nii.gz
 *.pt
@@ -25,4 +25,3 @@ data/
 .vscode/
 .DS_Store
 Thumbs.db
-

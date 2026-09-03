@@ -18,6 +18,7 @@ from brats_tta.config import save_config_snapshot
 from brats_tta.engine.inference import sliding_window_logits
 from brats_tta.metrics.segmentation import aggregate_metric_dicts, compute_region_metrics
 from brats_tta.utils.checkpoint import load_checkpoint, save_checkpoint
+from brats_tta.utils.distributed import DistributedContext, unwrap_model, wrap_model_for_distributed
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,8 +33,10 @@ class SourceTrainer:
         validation_loader: DataLoader,
         config: dict[str, Any],
         device: torch.device,
+        distributed_context: DistributedContext | None = None,
     ) -> None:
-        self.model = model.to(device)
+        self.distributed = distributed_context or DistributedContext(False, 0, 0, 1, device)
+        self.model = wrap_model_for_distributed(model, self.distributed)
         self.loss_function = loss_function.to(device)
         self.training_loader = training_loader
         self.validation_loader = validation_loader
@@ -44,9 +47,11 @@ class SourceTrainer:
 
         self.output_directory = Path(config["experiment"]["output_dir"]).expanduser().resolve()
         self.checkpoint_directory = self.output_directory / "checkpoints"
-        self.output_directory.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_directory.mkdir(parents=True, exist_ok=True)
-        save_config_snapshot(config, self.output_directory / "config.yaml")
+        if self.distributed.is_main_process:
+            self.output_directory.mkdir(parents=True, exist_ok=True)
+            self.checkpoint_directory.mkdir(parents=True, exist_ok=True)
+            save_config_snapshot(config, self.output_directory / "config.yaml")
+        self.distributed.barrier()
 
         self.optimizer = build_optimizer(self.model, self.training_config)
         self.scheduler = build_scheduler(self.optimizer, self.training_config)
@@ -59,14 +64,16 @@ class SourceTrainer:
 
     def resume(self, checkpoint_path: str | Path) -> None:
         checkpoint = load_checkpoint(checkpoint_path, self.device)
-        self.model.load_state_dict(checkpoint["model"], strict=True)
+        unwrap_model(self.model).load_state_dict(checkpoint["model"], strict=True)
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.scheduler.load_state_dict(checkpoint["scheduler"])
         if "scaler" in checkpoint:
             self.scaler.load_state_dict(checkpoint["scaler"])
         self.start_epoch = int(checkpoint["epoch"]) + 1
         self.best_dice = float(checkpoint.get("best_dice", float("-inf")))
-        LOGGER.info("Resumed from %s at epoch %d", checkpoint_path, self.start_epoch)
+        if self.distributed.is_main_process:
+            LOGGER.info("Resumed from %s at epoch %d", checkpoint_path, self.start_epoch)
+        self.distributed.barrier()
 
     def fit(self) -> None:
         number_of_epochs = int(self.training_config.get("epochs", 1000))
@@ -84,7 +91,7 @@ class SourceTrainer:
             }
 
             should_validate = (epoch + 1) % validate_every == 0 or epoch == number_of_epochs - 1
-            if should_validate:
+            if should_validate and self.distributed.is_main_process:
                 validation_metrics = self.validate()
                 record.update({f"val_{key}": value for key, value in validation_metrics.items()})
                 current_dice = validation_metrics["dice_mean"]
@@ -92,25 +99,35 @@ class SourceTrainer:
                     self.best_dice = current_dice
                     self._save(epoch, "best.pt")
 
-            if (epoch + 1) % save_every == 0 or epoch == number_of_epochs - 1:
-                self._save(epoch, f"epoch_{epoch + 1:04d}.pt")
-            self._save(epoch, "latest.pt")
-            self._append_history(record)
-            LOGGER.info("Epoch %d: %s", epoch + 1, _format_metrics(record))
+            if self.distributed.is_main_process:
+                if (epoch + 1) % save_every == 0 or epoch == number_of_epochs - 1:
+                    self._save(epoch, f"epoch_{epoch + 1:04d}.pt")
+                self._save(epoch, "latest.pt")
+                self._append_history(record)
+                LOGGER.info("Epoch %d: %s", epoch + 1, _format_metrics(record))
+            self.distributed.barrier()
 
     def train_epoch(self, epoch: int) -> dict[str, float]:
-        del epoch
         self.model.train()
         iterations = int(self.training_config.get("iterations_per_epoch", 250))
         gradient_clip = float(self.training_config.get("gradient_clip_norm", 12.0))
+        cycle = 0
+        self._set_sampler_epoch(epoch, cycle, iterations)
         iterator = iter(self.training_loader)
         running_loss = 0.0
-        progress = tqdm(range(iterations), desc="source train", leave=False)
+        progress = tqdm(
+            range(iterations),
+            desc="source train",
+            leave=False,
+            disable=not self.distributed.is_main_process,
+        )
 
         for _ in progress:
             try:
                 batch = next(iterator)
             except StopIteration:
+                cycle += 1
+                self._set_sampler_epoch(epoch, cycle, iterations)
                 iterator = iter(self.training_loader)
                 batch = next(iterator)
             image = batch["image"].to(self.device, non_blocking=True)
@@ -131,11 +148,16 @@ class SourceTrainer:
             self.scaler.update()
             running_loss += float(loss.detach().item())
             progress.set_postfix(loss=f"{running_loss / (_ + 1):.4f}")
-        return {"train_loss": running_loss / iterations}
+        totals = torch.tensor([running_loss, float(iterations)], device=self.device, dtype=torch.float64)
+        self.distributed.sum_tensor(totals)
+        return {"train_loss": float((totals[0] / totals[1]).item())}
 
     @torch.no_grad()
     def validate(self) -> dict[str, float]:
-        self.model.eval()
+        if not self.distributed.is_main_process:
+            raise RuntimeError("validation must only run on rank 0")
+        validation_model = unwrap_model(self.model)
+        validation_model.eval()
         case_metrics: list[dict[str, float]] = []
         maximum_cases = self.training_config.get("validation_cases")
         for case_index, batch in enumerate(tqdm(self.validation_loader, desc="validation", leave=False)):
@@ -146,7 +168,7 @@ class SourceTrainer:
             if target.shape[1] == 0:
                 continue
             logits = sliding_window_logits(
-                self.model,
+                validation_model,
                 image,
                 patch_size=self.inference_config["patch_size"],
                 overlap=self.inference_config.get("overlap", 0.5),
@@ -173,12 +195,18 @@ class SourceTrainer:
             "format_version": 1,
             "epoch": epoch,
             "best_dice": self.best_dice,
-            "model": self.model.state_dict(),
+            "model": unwrap_model(self.model).state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "scaler": self.scaler.state_dict(),
             "config": config,
+            "distributed_world_size": self.distributed.world_size,
         }
+
+    def _set_sampler_epoch(self, epoch: int, cycle: int, iterations: int) -> None:
+        set_epoch = getattr(self.training_loader.sampler, "set_epoch", None)
+        if callable(set_epoch):
+            set_epoch(epoch * max(iterations, 1) + cycle)
 
     def _save(self, epoch: int, filename: str) -> None:
         save_checkpoint(self._checkpoint_state(epoch), self.checkpoint_directory / filename)

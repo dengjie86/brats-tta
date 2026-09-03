@@ -71,3 +71,22 @@ def test_input_divisibility_is_checked() -> None:
 def test_negative_deep_supervision_weight_is_rejected() -> None:
     with pytest.raises(ValueError, match="non-negative"):
         DeepSupervisionLoss(nn.Identity(), [1.0, -0.5])
+
+
+def test_zero_weight_deep_supervision_head_receives_zero_gradient() -> None:
+    model = PlainUNet3D(features=(4, 8, 16), deep_supervision=True)
+    loss_function = build_loss(
+        {
+            "dice_weight": 1.0,
+            "bce_weight": 1.0,
+            "deep_supervision_weights": [1.0, 0.0],
+        },
+        number_of_outputs=2,
+    )
+
+    outputs = model(torch.randn((1, 4, 16, 16, 16)))
+    loss_function(outputs, _nested_target(16)).backward()
+
+    disabled_head_gradient = model.segmentation_heads[0].weight.grad
+    assert disabled_head_gradient is not None
+    assert torch.count_nonzero(disabled_head_gradient) == 0

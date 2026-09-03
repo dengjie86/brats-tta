@@ -93,6 +93,10 @@ class DeepSupervisionLoss(nn.Module):
         total = target.new_zeros((), dtype=torch.float32)
         for output, weight in zip(outputs, self.weights):
             if weight.item() == 0:
+                # Keep every returned head in the autograd graph. This produces
+                # zero gradients for the disabled head and keeps DDP reduction
+                # well-defined without find_unused_parameters overhead.
+                total = total + output.sum() * 0.0
                 continue
             scaled_target = target
             if output.shape[2:] != target.shape[2:]:
