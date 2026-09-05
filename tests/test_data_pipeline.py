@@ -4,6 +4,7 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import pytest
 import torch
 from torch.utils.data import DataLoader
 
@@ -118,6 +119,19 @@ def test_unlabeled_target_case_can_be_collated(tmp_path: Path) -> None:
     batch = next(iter(loader))
     assert batch["label"] == [""]
     assert batch["target"].shape == (1, 0, 9, 10, 11)
+
+
+def test_manifest_can_skip_incomplete_cases_without_modifying_source(tmp_path: Path) -> None:
+    raw_root = tmp_path / "target"
+    _write_case(raw_root, "Complete-001")
+    _write_case(raw_root, "Incomplete-002")
+    (raw_root / "Incomplete-002" / "Incomplete-002-t1c.nii.gz").unlink()
+
+    with pytest.raises(ValueError, match="missing modalities"):
+        discover_brats_cases(raw_root)
+
+    cases = discover_brats_cases(raw_root, skip_incomplete=True)
+    assert [case["id"] for case in cases] == ["Complete-001"]
 
 
 def test_nested_kaggle_brats2021_layout(tmp_path: Path) -> None:

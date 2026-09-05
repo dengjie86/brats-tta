@@ -35,6 +35,15 @@ def test_modern_schema_rejects_legacy_enhancing_value() -> None:
         labelmap_to_regions(np.asarray([[[4]]]), "brats_modern")
 
 
+def test_pediatric_2024_schema_merges_four_tissues_into_nested_regions() -> None:
+    label = np.asarray([[[0, 1, 2, 3, 4]]], dtype=np.uint8)
+    regions = labelmap_to_regions(label, "brats_ped_2024")
+
+    np.testing.assert_array_equal(regions[0, 0, 0], [0, 1, 0, 0, 0])
+    np.testing.assert_array_equal(regions[1, 0, 0], [0, 1, 1, 1, 0])
+    np.testing.assert_array_equal(regions[2, 0, 0], [0, 1, 1, 1, 1])
+
+
 def test_output_conversion_repairs_region_hierarchy() -> None:
     regions = np.zeros((3, 2, 2, 2), dtype=np.float32)
     regions[0, 0, 0, 0] = 1.0

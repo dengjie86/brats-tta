@@ -22,11 +22,14 @@ def load_model_from_checkpoint(
     device: torch.device,
     config_override: dict[str, Any] | None = None,
 ) -> tuple[torch.nn.Module, dict[str, Any], dict[str, Any]]:
-    checkpoint = load_checkpoint(checkpoint_path, device)
+    # Keep optimizer/scheduler tensors from a training checkpoint on CPU.  Only
+    # the model is needed for inference, which matters on smaller local GPUs.
+    checkpoint = load_checkpoint(checkpoint_path, "cpu")
     config = config_override or checkpoint.get("config")
     if not isinstance(config, dict):
         raise ValueError("checkpoint has no embedded config; pass --config")
-    model = build_source_model(config["model"]).to(device)
+    model = build_source_model(config["model"])
     model.load_state_dict(checkpoint["model"], strict=True)
+    model.to(device)
     model.eval()
     return model, config, checkpoint

@@ -66,6 +66,7 @@ data/raw/BraTS-GLI-00001/
 
 - `brats_modern`：标签值 `1, 2, 3`，其中 ET=`3`、TC=`1∪3`、WT=`1∪2∪3`。
 - `brats_legacy`：标签值 `1, 2, 4`，其中 ET=`4`、TC=`1∪4`、WT=`1∪2∪4`。
+- `brats_ped_2024`：PED 2024 标签 ET=`1`、NET=`2`、CC=`3`、ED=`4`；与三通道源模型对齐为 ET=`1`、TC=`1∪2∪3`、WT=`1∪2∪3∪4`。
 
 不要仅凭文件名猜标签规范；第一次运行前应检查每个数据集 segmentation 的唯一值。四个模态必须已经共配准，shape 和 affine 不一致时预处理会立即失败。
 
@@ -208,6 +209,38 @@ brats-infer `
 
 导出的 label map 会按 `ET ⊆ TC ⊆ WT` 做确定性层级修复；原始概率仍可通过 `--save-probabilities` 保存，便于后续公平比较 TTA 方法。
 
+## 目标域 Source / Norm / TENT 评估
+
+`brats-evaluate-tta` 可以直接读取原始 NIfTI manifest，逐病例记录 ET/TC/WT Dice，并增量写入 JSONL；中断后重复同一命令会跳过已完成病例。例如建立只读 PED 清单：
+
+```powershell
+brats-prepare-manifest `
+  --root E:\dataset\BraTS-PEDs2024_Training `
+  --train-output outputs\target_eval\manifests\ped_raw.json `
+  --val-fraction 0 `
+  --label-schema brats_ped_2024 `
+  --skip-incomplete
+```
+
+`--skip-incomplete` 只会从 manifest 排除缺少模态或标签的病例，不会改动源数据。三种方法使用同一滑窗和阈值：
+
+```powershell
+brats-evaluate-tta `
+  --checkpoint outputs\source\checkpoints\best.pt `
+  --manifest outputs\target_eval\manifests\ped_raw.json `
+  --output-dir outputs\target_eval\ped `
+  --methods source norm tent `
+  --device cuda `
+  --patch-size 128 128 128 `
+  --overlap 0.5 `
+  --sw-batch-size 1 `
+  --amp `
+  --tent-lr 0.001 `
+  --tent-steps 1
+```
+
+TENT 默认是 episodic：每个病人前恢复源权重，只更新 `InstanceNorm3d` 的 affine scale/shift，不使用目标标签。模型中的 `InstanceNorm3d(track_running_stats=False)` 没有持久化的 running mean/variance，因此 `norm` 统计量基线在本架构上与 `source` 严格等价；命令会在 summary 中显式记录这一点，避免把完全相同的输出解读为有效适应。
+
 ## 验证代码
 
 ```powershell
@@ -221,3 +254,5 @@ python -m compileall -q src
 
 - Isensee et al., [nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation](https://doi.org/10.1038/s41592-020-01008-z), *Nature Methods*, 2021.
 - 官方开源实现：[MIC-DKFZ/nnUNet](https://github.com/MIC-DKFZ/nnUNet)。
+- Wang et al., [Tent: Fully Test-Time Adaptation by Entropy Minimization](https://openreview.net/forum?id=uXl3bZLkr3c), *ICLR*, 2021.
+- TENT 官方开源实现：[DequanWang/TENT](https://github.com/DequanWang/TENT)。

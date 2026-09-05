@@ -15,12 +15,27 @@ LABEL_SCHEMAS: dict[str, dict[str, tuple[int, ...] | int]] = {
         "tc": (1, 3),
         "wt": (1, 2, 3),
         "et_value": 3,
+        "tc_value": 1,
+        "wt_value": 2,
     },
     "brats_legacy": {
         "et": (4,),
         "tc": (1, 4),
         "wt": (1, 2, 4),
         "et_value": 4,
+        "tc_value": 1,
+        "wt_value": 2,
+    },
+    # BraTS-PEDs 2024 provides four mutually exclusive tissues:
+    # 1=ET, 2=NET, 3=CC, 4=ED.  The adult source model predicts the
+    # three nested evaluation regions, so NET and CC are merged into TC.
+    "brats_ped_2024": {
+        "et": (1,),
+        "tc": (1, 2, 3),
+        "wt": (1, 2, 3, 4),
+        "et_value": 1,
+        "tc_value": 2,
+        "wt_value": 4,
     },
 }
 
@@ -76,8 +91,8 @@ def regions_to_labelmap(
         tc = tc | et
         wt = wt | tc
     result = np.zeros(regions.shape[1:], dtype=np.uint8)
-    result[wt] = 2
-    result[tc] = 1
+    result[wt] = int(LABEL_SCHEMAS[schema]["wt_value"])
+    result[tc] = int(LABEL_SCHEMAS[schema]["tc_value"])
     result[et] = int(LABEL_SCHEMAS[schema]["et_value"])
     return result
 

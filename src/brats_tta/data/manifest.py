@@ -27,6 +27,7 @@ def discover_brats_cases(
     root: str | Path,
     *,
     require_label: bool = True,
+    skip_incomplete: bool = False,
     suffixes: dict[str, tuple[str, ...]] | None = None,
 ) -> list[dict[str, Any]]:
     """Discover flat or nested BraTS cases without depending on a year prefix.
@@ -107,7 +108,7 @@ def discover_brats_cases(
             record["label"] = str(matches["label"][0].resolve())
         cases.append(record)
 
-    if errors:
+    if errors and not skip_incomplete:
         preview = "\n".join(errors[:20])
         remainder = "" if len(errors) <= 20 else f"\n... and {len(errors) - 20} more"
         raise ValueError(f"incomplete BraTS cases were found:\n{preview}{remainder}")

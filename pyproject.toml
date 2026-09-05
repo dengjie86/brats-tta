@@ -29,6 +29,7 @@ brats-prepare-manifest = "brats_tta.cli.prepare_manifest:main"
 brats-preprocess = "brats_tta.cli.preprocess:main"
 brats-train-source = "brats_tta.cli.train_source:main"
 brats-evaluate-source = "brats_tta.cli.evaluate_source:main"
+brats-evaluate-tta = "brats_tta.cli.evaluate_tta:main"
 brats-infer = "brats_tta.cli.infer:main"
 brats-inspect-model = "brats_tta.cli.inspect_model:main"
 

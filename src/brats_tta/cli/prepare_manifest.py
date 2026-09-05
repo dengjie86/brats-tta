@@ -5,6 +5,7 @@ import logging
 
 from brats_tta.cli.common import configure_logging
 from brats_tta.data.manifest import discover_brats_cases, split_cases, write_manifest
+from brats_tta.data.preprocessing import LABEL_SCHEMAS
 
 LOGGER = logging.getLogger(__name__)
 
@@ -19,6 +20,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-missing-label", action="store_true", help="For unlabeled inference manifests"
     )
+    parser.add_argument(
+        "--skip-incomplete",
+        action="store_true",
+        help="Skip incomplete case folders instead of changing or rejecting the source dataset",
+    )
+    parser.add_argument(
+        "--label-schema",
+        choices=sorted(LABEL_SCHEMAS),
+        help="Record the label convention in the generated manifest",
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser
 
@@ -28,13 +39,19 @@ def main() -> None:
     configure_logging(args.verbose)
     if args.val_fraction > 0 and not args.val_output:
         raise SystemExit("--val-output is required when --val-fraction > 0")
-    cases = discover_brats_cases(args.root, require_label=not args.allow_missing_label)
+    cases = discover_brats_cases(
+        args.root,
+        require_label=not args.allow_missing_label,
+        skip_incomplete=args.skip_incomplete,
+    )
     training_cases, validation_cases = split_cases(
         cases,
         validation_fraction=args.val_fraction,
         seed=args.seed,
     )
     metadata = {"dataset_root": args.root, "split_seed": args.seed}
+    if args.label_schema:
+        metadata["label_schema"] = args.label_schema
     write_manifest(training_cases, args.train_output, metadata={**metadata, "split": "train"})
     if args.val_output:
         write_manifest(validation_cases, args.val_output, metadata={**metadata, "split": "validation"})
