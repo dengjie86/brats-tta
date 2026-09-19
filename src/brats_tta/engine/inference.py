@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import nibabel as nib
@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from brats_tta.data.preprocessing import regions_to_labelmap
+from brats_tta.data.preprocessing import classes_to_labelmap, regions_to_labelmap
 
 
 @torch.no_grad()
@@ -23,6 +23,7 @@ def sliding_window_logits(
     sw_batch_size: int = 1,
     gaussian_weighting: bool = True,
     amp: bool = True,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> torch.Tensor:
     """Predict a single 3D case and return logits with the original spatial shape."""
 
@@ -100,6 +101,9 @@ def sliding_window_logits(
                 batch_logits[patch_index : patch_index + 1] * importance
             )
             weight_accumulator[(slice(None), slice(None), *spatial_slice)] += importance
+        if progress_callback is not None:
+            progress_callback(batch_start // sw_batch_size + 1,
+                              (len(locations) + sw_batch_size - 1) // sw_batch_size)
 
     assert output_accumulator is not None and weight_accumulator is not None
     logits = output_accumulator / weight_accumulator.clamp_min(1e-7)
@@ -115,6 +119,7 @@ def save_brats_prediction(
     destination: str | Path,
     *,
     label_schema: str,
+    output_mode: str = "regions_sigmoid",
     threshold: float = 0.5,
     enforce_hierarchy: bool = True,
 ) -> None:
@@ -122,12 +127,19 @@ def save_brats_prediction(
         probabilities = probabilities.detach().cpu().numpy()
     if probabilities.ndim == 5:
         probabilities = probabilities[0]
-    labelmap = regions_to_labelmap(
-        probabilities,
-        label_schema,
-        threshold=threshold,
-        enforce_hierarchy=enforce_hierarchy,
-    )
+    if output_mode == "regions_sigmoid":
+        labelmap = regions_to_labelmap(
+            probabilities,
+            label_schema,
+            threshold=threshold,
+            enforce_hierarchy=enforce_hierarchy,
+        )
+    elif output_mode == "classes_softmax":
+        if probabilities.ndim != 4 or probabilities.shape[0] != 4:
+            raise ValueError("classes_softmax prediction must have shape [4,D,H,W]")
+        labelmap = classes_to_labelmap(np.argmax(probabilities, axis=0), label_schema)
+    else:
+        raise ValueError(f"unknown output_mode {output_mode!r}")
     reference = nib.load(str(reference_path))
     header = reference.header.copy()
     header.set_data_dtype(np.uint8)

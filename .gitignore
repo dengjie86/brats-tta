@@ -23,5 +23,6 @@ dist/
 # Editors and OS files
 .idea/
 .vscode/
+.playwright-cli/
 .DS_Store
 Thumbs.db

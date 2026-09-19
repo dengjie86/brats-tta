@@ -172,6 +172,7 @@ def test_two_process_ddp_train_validate_and_checkpoint(tmp_path: Path) -> None:
     assert all(process.returncode == 0 for process in processes), "\n".join(outputs)
 
     checkpoint = load_checkpoint(output_directory / "checkpoints" / "latest.pt")
+    assert (output_directory / "checkpoints" / "last.pt").exists()
     assert checkpoint["distributed_world_size"] == 2
     assert not any(key.startswith("module.") for key in checkpoint["model"])
     PlainUNet3D(features=(2, 4, 8)).load_state_dict(checkpoint["model"], strict=True)

@@ -2,6 +2,12 @@
 
 本项目先固定并实现一个可复现的 BraTS GLI 源域模型，再在同一数据、推理和评估接口上扩展 SSA / PED 的测试时自适应（TTA）。当前版本已经包含源域训练所需的完整闭环：NIfTI 扫描、manifest、预处理、patch 训练、全体积滑窗验证、断点恢复、评估和 NIfTI 导出。
 
+> 当前准备重训的是 31.20M 参数、六阶段、四互斥类 `BatchNorm3d` 对照实验，入口为
+> `configs/source_brats_gli_4class_bn.yaml` 和 `scripts/autodl_train_source.sh`。
+> 其 AutoDL 操作说明见 [AutoDL 源域模型训练](docs/autodl_source_training.md)。
+> 下文“已固定的源模型”主要记录原先的三通道 `InstanceNorm3d` 区域输出基线，
+> 两者不能混用配置或 checkpoint。
+
 ## 已固定的源模型
 
 | 项目 | 设置 |
@@ -241,7 +247,49 @@ brats-evaluate-tta `
 
 TENT 默认是 episodic：每个病人前恢复源权重，只更新 `InstanceNorm3d` 的 affine scale/shift，不使用目标标签。模型中的 `InstanceNorm3d(track_running_stats=False)` 没有持久化的 running mean/variance，因此 `norm` 统计量基线在本架构上与 `source` 严格等价；命令会在 summary 中显式记录这一点，避免把完全相同的输出解读为有效适应。
 
+当前 TENT 为适配本模型的 InstanceNorm affine / Bernoulli 熵版本。CUDA FP16 适配使用 `GradScaler` 防止体素平均后的微小梯度下溢；每个 episodic reset 同时恢复缩放器状态。summary 中的 `implementation=instance_norm_affine_entropy_v2` 和 `gradient_scaling=true` 标记这一实现。早期缺少梯度缩放的 FP16 TENT 结果需要重跑，请使用新的 `--output-dir`，避免增量续跑时读取旧结果。`--tent-steps > 1` 返回最后一次前向的预测，与官方 TENT 的多步循环一致。
+
 ## 验证代码
+
+### PED 2024 脑提取与纯 FP32 对照
+
+PED 2024 原始数据不能直接视作已经去颅骨的 BraTS 2021 输入。新增的
+`brats-extract-brain-masks` 仅生成独立脑掩膜和派生 manifest，读取时将同一掩膜
+应用到四个模态，再计算非零区域 z-score；**不改原图，也不裁掉标签中的肿瘤**。
+HD-BET 依赖建议装在独立环境：`pip install -e ".[brain-extraction]"`。
+
+```powershell
+brats-extract-brain-masks `
+  --manifest outputs/target_eval/manifests/ped_raw.json `
+  --output-root outputs/target_eval/preprocessed/ped_brain_masks `
+  --output-manifest outputs/target_eval/preprocessed/ped_brain.json `
+  --weights C:/Users/Yuuhi/hd-bet_params/release_2.0.0
+
+brats-evaluate-tta `
+  --checkpoint outputs/source/checkpoints/best.pt `
+  --manifest outputs/target_eval/preprocessed/ped_brain.json `
+  --output-dir outputs/target_eval/ped_corrected_fp32 `
+  --methods source tent --no-amp --tent-steps 1
+```
+
+`--no-amp` 同时禁用 TF32。结果目录记录 checkpoint/manifest 指纹与适配参数，
+拒绝混用不同预处理或步数的旧分数。病例间累积的 `--continual` 模式没有保存
+适配状态，不能跳过已完成病例续跑；默认逐病例重置模式可以续跑。
+TENT 的 `--tent-steps` 是**每个 patch batch** 的更新次数，不是整例只更新几次。
+论文依据、1/5/10 步对照及完整批处理脚本见
+[实验协议](docs/ped_preprocessing_tent_protocol.md)。
+
+批处理脚本还会监督评估子进程：`progress.json` 记录当前病例和实际完成的 patch，
+5 分钟无进展就结束该工作进程并断点重试（最多 2 次），超限明确失败，不会跳过
+困难病例。它只适用于本脚本的逐病例重置模式，不适用于未保存模型状态的 continual TENT。
+直接运行评估命令时有进度和调用栈诊断，但自动重启由批处理脚本负责。
+
+另有 `brats-evaluate-tta-rounds --rounds 5`：逐病例适配五轮，每轮遍历全部 patch，
+随后用固定的轮后模型重新预测整例，记录第 0（Source）到第 5 轮 Dice。
+它与 `--tent-steps 5` 的在线预测不是同一种实验。详见
+[逐病例五轮协议](docs/tent_patient_rounds_protocol.md)。
+
+### 测试
 
 ```powershell
 python -m pytest

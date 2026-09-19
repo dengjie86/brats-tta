@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from brats_tta.data.preprocessing import classes_to_regions
+
 REGION_NAMES = ("ET", "TC", "WT")
 
 
@@ -39,16 +41,49 @@ def compute_region_metrics(
     *,
     from_logits: bool = True,
     threshold: float = 0.5,
+    output_mode: str = "regions_sigmoid",
+    label_schema: str = "brats_modern",
 ) -> dict[str, float]:
-    probabilities = (
-        torch.sigmoid(logits_or_probabilities.float()) if from_logits else logits_or_probabilities.float()
-    )
-    scores = dice_per_region(probabilities, target, threshold=threshold)
+    if output_mode == "regions_sigmoid":
+        probabilities = (
+            torch.sigmoid(logits_or_probabilities.float()) if from_logits else logits_or_probabilities.float()
+        )
+        target_regions = target
+        violation = hierarchy_violation_rate(probabilities, threshold).mean()
+    elif output_mode == "classes_softmax":
+        if logits_or_probabilities.ndim != 5 or logits_or_probabilities.shape[1] != 4:
+            raise ValueError("classes_softmax metrics require [B,4,D,H,W] predictions")
+        if target.ndim != 4 or tuple(target.shape) != (
+            logits_or_probabilities.shape[0], *logits_or_probabilities.shape[2:]
+        ):
+            raise ValueError("classes_softmax target must be [B,D,H,W] matching prediction spatial shape")
+        class_predictions = torch.argmax(logits_or_probabilities, dim=1)
+        prediction_regions = torch.from_numpy(
+            np.stack(
+                [
+                    classes_to_regions(case.detach().cpu().numpy(), label_schema)
+                    for case in class_predictions
+                ]
+            )
+        ).to(logits_or_probabilities.device, dtype=torch.float32)
+        target_regions = torch.from_numpy(
+            np.stack(
+                [
+                    classes_to_regions(case.detach().cpu().numpy(), label_schema)
+                    for case in target.long()
+                ]
+            )
+        ).to(logits_or_probabilities.device, dtype=torch.float32)
+        probabilities = prediction_regions
+        violation = torch.zeros((), device=logits_or_probabilities.device)
+    else:
+        raise ValueError(f"unknown output_mode {output_mode!r}")
+    scores = dice_per_region(probabilities, target_regions, threshold=threshold)
     metrics: dict[str, float] = {}
     for region_index, region_name in enumerate(REGION_NAMES):
         metrics[f"dice_{region_name}"] = float(scores[:, region_index].mean().item())
     metrics["dice_mean"] = float(scores.mean().item())
-    metrics["hierarchy_violation"] = float(hierarchy_violation_rate(probabilities, threshold).mean().item())
+    metrics["hierarchy_violation"] = float(violation.item())
     return metrics
 
 

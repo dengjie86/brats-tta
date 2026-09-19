@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+from pathlib import Path
 
 import torch
 
@@ -15,6 +17,30 @@ from brats_tta.utils.distributed import initialize_distributed
 from brats_tta.utils.reproducibility import seed_everything
 
 LOGGER = logging.getLogger(__name__)
+
+
+def configure_runtime_threads() -> tuple[int, int]:
+    """Keep the main process and DataLoader workers within the host CPU quota."""
+
+    intraop_threads = max(1, int(os.environ.get("TORCH_NUM_THREADS", "1")))
+    interop_threads = max(1, int(os.environ.get("TORCH_INTEROP_THREADS", "1")))
+    torch.set_num_threads(intraop_threads)
+    try:
+        torch.set_num_interop_threads(interop_threads)
+    except RuntimeError:
+        # PyTorch rejects changing this after parallel work has started. The
+        # inherited value is still valid for callers embedding this CLI.
+        pass
+    return intraop_threads, interop_threads
+
+
+def configure_fp32_runtime() -> None:
+    """Disable reduced-precision CUDA paths used by strict FP32 experiments."""
+
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("highest")
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,24 +137,32 @@ def apply_train_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
 
 def main() -> None:
     args = build_parser().parse_args()
+    intraop_threads, interop_threads = configure_runtime_threads()
     config = apply_train_cli_overrides(load_config(args.config), args)
+    configure_fp32_runtime()
     context = initialize_distributed(config["training"].get("device", "auto"))
-    configure_logging(args.verbose, rank=context.rank)
+    output_directory = Path(config["experiment"]["output_dir"]).expanduser().resolve()
+    configure_logging(
+        args.verbose,
+        rank=context.rank,
+        log_file=output_directory / "training.log" if context.is_main_process else None,
+    )
     try:
         seed = int(config["experiment"].get("seed", 2025))
         seed_everything(
             seed + context.rank,
             deterministic=config["experiment"].get("deterministic", False),
         )
-        if hasattr(torch, "set_float32_matmul_precision"):
-            torch.set_float32_matmul_precision("high")
-
         model = build_source_model(config["model"])
         parameter_count = model.parameter_count()
         number_of_outputs = (
             len(config["model"]["features"]) - 1 if config["model"].get("deep_supervision", True) else 1
         )
-        loss_function = build_loss(config["loss"], number_of_outputs)
+        loss_function = build_loss(
+            config["loss"],
+            number_of_outputs,
+            output_mode=config["model"].get("output_mode", "regions_sigmoid"),
+        )
         training_loader, validation_loader = build_dataloaders(config, context)
         per_device_batch = int(config["training"]["batch_size"])
         LOGGER.info(
@@ -141,14 +175,54 @@ def main() -> None:
         LOGGER.info("Training manifest: %s", config["data"]["train_manifest"])
         LOGGER.info("Validation manifest: %s", config["data"]["val_manifest"])
         LOGGER.info("Output directory: %s", config["experiment"]["output_dir"])
+        LOGGER.info("Source augmentation: %s", config["data"].get("augmentation", {}))
         LOGGER.info(
-            "Training setup: patch=%s, batch/GPU=%d, global_batch=%d, epochs=%d, iterations/epoch=%d, amp=%s",
+            "Training setup: patch=%s, batch/GPU=%d, global_batch=%d, epochs=%d, "
+            "iterations/epoch=%d, amp=%s, effective_precision=%s",
             config["data"]["patch_size"],
             per_device_batch,
             per_device_batch * context.world_size,
             config["training"]["epochs"],
             config["training"]["iterations_per_epoch"],
             config["training"].get("amp", True),
+            "amp" if config["training"].get("amp", True) else "fp32",
+        )
+        LOGGER.info(
+            "Precision controls: float32_matmul=%s, cuda_tf32=%s, cudnn_tf32=%s, cudnn_benchmark=%s",
+            getattr(torch, "get_float32_matmul_precision", lambda: "unavailable")(),
+            torch.backends.cuda.matmul.allow_tf32,
+            torch.backends.cudnn.allow_tf32,
+            torch.backends.cudnn.benchmark,
+        )
+        LOGGER.info(
+            "CPU/data pipeline: torch_threads=%d, interop_threads=%d, workers=%d, "
+            "validation_workers=%d, prefetch=%d, validation_prefetch=%d, pin_memory=%s",
+            intraop_threads,
+            interop_threads,
+            config["data"].get("num_workers", 0),
+            config["data"].get("validation_num_workers", 0),
+            config["data"].get("prefetch_factor", 2),
+            config["data"].get("validation_prefetch_factor", config["data"].get("prefetch_factor", 2)),
+            config["data"].get("pin_memory", False),
+        )
+        if context.device.type == "cuda":
+            properties = torch.cuda.get_device_properties(context.device)
+            LOGGER.info(
+                "CUDA device: %s, total_memory=%.1f MiB",
+                properties.name,
+                properties.total_memory / (1024**2),
+            )
+        LOGGER.info(
+            "Optimization: optimizer=%s, lr=%s, momentum=%s, weight_decay=%s, poly_exponent=%s",
+            config["training"].get("optimizer", "sgd"),
+            config["training"].get("learning_rate"),
+            config["training"].get("momentum"),
+            config["training"].get("weight_decay"),
+            config["training"].get("poly_exponent"),
+        )
+        LOGGER.info(
+            "Checkpoint policy: periodic every %d epochs, latest every epoch, plus best.pt and final last.pt",
+            int(config["training"].get("save_every", 50)),
         )
         LOGGER.info(
             "Training cases: %d; validation cases: %d",
@@ -168,6 +242,9 @@ def main() -> None:
         if args.resume:
             trainer.resume(args.resume)
         trainer.fit()
+    except Exception:
+        LOGGER.exception("Source training failed")
+        raise
     finally:
         context.close()
 

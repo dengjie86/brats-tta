@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -23,6 +25,49 @@ from brats_tta.utils.distributed import DistributedContext, unwrap_model, wrap_m
 LOGGER = logging.getLogger(__name__)
 
 
+def _progress_disabled(distributed: DistributedContext) -> bool:
+    """Avoid terminal progress writes when training is detached or piped."""
+    if not distributed.is_main_process:
+        return True
+    value = os.environ.get("TQDM_DISABLE", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+class _CudaBatchPrefetcher:
+    """Copy the next pinned batch while the current batch is executing."""
+
+    def __init__(self, iterator: Any, device: torch.device) -> None:
+        self.iterator = iterator
+        self.device = device
+        self.stream = torch.cuda.Stream(device=device)
+        self.next_image: torch.Tensor | None = None
+        self.next_target: torch.Tensor | None = None
+        self._preload()
+
+    def _preload(self) -> None:
+        try:
+            batch = next(self.iterator)
+        except StopIteration:
+            self.next_image = None
+            self.next_target = None
+            return
+        with torch.cuda.stream(self.stream):
+            self.next_image = batch["image"].to(self.device, non_blocking=True)
+            self.next_target = batch["target"].to(self.device, non_blocking=True)
+
+    def next(self) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.next_image is None or self.next_target is None:
+            raise StopIteration
+        current_stream = torch.cuda.current_stream(self.device)
+        current_stream.wait_stream(self.stream)
+        image = self.next_image
+        target = self.next_target
+        image.record_stream(current_stream)
+        target.record_stream(current_stream)
+        self._preload()
+        return image, target
+
+
 class SourceTrainer:
     def __init__(
         self,
@@ -36,7 +81,12 @@ class SourceTrainer:
         distributed_context: DistributedContext | None = None,
     ) -> None:
         self.distributed = distributed_context or DistributedContext(False, 0, 0, 1, device)
-        self.model = wrap_model_for_distributed(model, self.distributed)
+        self.sync_batchnorm = bool(config["model"].get("sync_batchnorm", False))
+        self.model = wrap_model_for_distributed(
+            model,
+            self.distributed,
+            sync_batchnorm=self.sync_batchnorm,
+        )
         self.loss_function = loss_function.to(device)
         self.training_loader = training_loader
         self.validation_loader = validation_loader
@@ -44,6 +94,8 @@ class SourceTrainer:
         self.device = device
         self.training_config = config["training"]
         self.inference_config = config["inference"]
+        self.output_mode = config["model"].get("output_mode", "regions_sigmoid")
+        self.label_schema = config["data"].get("label_schema", "brats_modern")
 
         self.output_directory = Path(config["experiment"]["output_dir"]).expanduser().resolve()
         self.checkpoint_directory = self.output_directory / "checkpoints"
@@ -80,6 +132,8 @@ class SourceTrainer:
         validate_every = int(self.training_config.get("validate_every", 10))
         save_every = int(self.training_config.get("save_every", 50))
         for epoch in range(self.start_epoch, number_of_epochs):
+            epoch_started_at = datetime.now(timezone.utc).isoformat()
+            learning_rate = float(self.optimizer.param_groups[0]["lr"])
             if self.distributed.is_main_process:
                 LOGGER.info("Epoch %d/%d started", epoch + 1, number_of_epochs)
             start_time = perf_counter()
@@ -87,10 +141,15 @@ class SourceTrainer:
             self.scheduler.step()
             record: dict[str, Any] = {
                 "epoch": epoch,
-                "lr": self.optimizer.param_groups[0]["lr"],
-                "seconds": perf_counter() - start_time,
+                "completed_epoch": epoch + 1,
+                "global_step": (epoch + 1) * int(self.training_config.get("iterations_per_epoch", 250)),
+                "started_at_utc": epoch_started_at,
+                "lr": learning_rate,
+                "next_lr": float(self.optimizer.param_groups[0]["lr"]),
+                "train_seconds": perf_counter() - start_time,
                 **training_metrics,
             }
+            saved_checkpoints: list[str] = []
 
             should_validate = (epoch + 1) % validate_every == 0 or epoch == number_of_epochs - 1
             if should_validate:
@@ -109,41 +168,72 @@ class SourceTrainer:
                     if current_dice > self.best_dice:
                         self.best_dice = current_dice
                         self._save(epoch, "best.pt")
+                        saved_checkpoints.append("best.pt")
+                        LOGGER.info(
+                            "New best validation Dice %.6f at epoch %d",
+                            self.best_dice,
+                            epoch + 1,
+                        )
 
             if self.distributed.is_main_process:
-                if (epoch + 1) % save_every == 0 or epoch == number_of_epochs - 1:
+                if (epoch + 1) % save_every == 0:
                     self._save(epoch, f"epoch_{epoch + 1:04d}.pt")
+                    saved_checkpoints.append(f"epoch_{epoch + 1:04d}.pt")
+                if epoch == number_of_epochs - 1:
+                    self._save(epoch, "last.pt")
+                    saved_checkpoints.append("last.pt")
                 self._save(epoch, "latest.pt")
+                saved_checkpoints.append("latest.pt")
+                record["best_dice"] = self.best_dice
+                record["checkpoints"] = saved_checkpoints
+                record["seconds"] = perf_counter() - start_time
+                record["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
                 self._append_history(record)
                 LOGGER.info("Epoch %d: %s", epoch + 1, _format_metrics(record))
             self.distributed.barrier()
 
     def train_epoch(self, epoch: int) -> dict[str, float]:
         self.model.train()
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self.device)
         iterations = int(self.training_config.get("iterations_per_epoch", 250))
         gradient_clip = float(self.training_config.get("gradient_clip_norm", 12.0))
         cycle = 0
         self._set_sampler_epoch(epoch, cycle, iterations)
         iterator = iter(self.training_loader)
-        running_loss = 0.0
+        prefetcher = (
+            _CudaBatchPrefetcher(iterator, self.device) if self.device.type == "cuda" else None
+        )
+        running_loss = torch.zeros((), device=self.device, dtype=torch.float64)
         log_every = int(self.training_config.get("log_every", 10))
         progress = tqdm(
             range(iterations),
             desc="source train",
             leave=False,
-            disable=not self.distributed.is_main_process,
+            disable=_progress_disabled(self.distributed),
         )
 
         for _ in progress:
             try:
-                batch = next(iterator)
+                if prefetcher is not None:
+                    image, target = prefetcher.next()
+                else:
+                    batch = next(iterator)
+                    image = batch["image"].to(self.device, non_blocking=True)
+                    target = batch["target"].to(self.device, non_blocking=True)
             except StopIteration:
                 cycle += 1
                 self._set_sampler_epoch(epoch, cycle, iterations)
                 iterator = iter(self.training_loader)
-                batch = next(iterator)
-            image = batch["image"].to(self.device, non_blocking=True)
-            target = batch["target"].to(self.device, non_blocking=True)
+                prefetcher = (
+                    _CudaBatchPrefetcher(iterator, self.device) if self.device.type == "cuda" else None
+                )
+                if prefetcher is not None:
+                    image, target = prefetcher.next()
+                else:
+                    batch = next(iterator)
+                    image = batch["image"].to(self.device, non_blocking=True)
+                    target = batch["target"].to(self.device, non_blocking=True)
             self.optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
                 device_type=self.device.type,
@@ -158,32 +248,55 @@ class SourceTrainer:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), gradient_clip)
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            running_loss += float(loss.detach().item())
-            progress.set_postfix(loss=f"{running_loss / (_ + 1):.4f}")
+            running_loss.add_(loss.detach().to(dtype=running_loss.dtype))
             if self.distributed.is_main_process and ((_ + 1) % log_every == 0 or _ + 1 == iterations):
+                current_loss = float(loss.detach().item())
+                running_loss_value = float(running_loss.div(_ + 1).item())
+                progress.set_postfix(loss=f"{running_loss_value:.4f}")
                 LOGGER.info(
-                    "Epoch %d train iteration %d/%d: loss=%.4f",
+                    "Epoch %d train iteration %d/%d: rank0_loss=%.6f, rank0_running_loss=%.6f, lr=%.8g",
                     epoch + 1,
                     _ + 1,
                     iterations,
-                    running_loss / (_ + 1),
+                    current_loss,
+                    running_loss_value,
+                    self.optimizer.param_groups[0]["lr"],
                 )
-        totals = torch.tensor([running_loss, float(iterations)], device=self.device, dtype=torch.float64)
+        totals = torch.stack(
+            (
+                running_loss,
+                torch.tensor(float(iterations), device=self.device, dtype=torch.float64),
+            )
+        )
         self.distributed.sum_tensor(totals)
-        return {"train_loss": float((totals[0] / totals[1]).item())}
+        metrics = {"train_loss": float((totals[0] / totals[1]).item())}
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            peak_memory = torch.tensor(
+                [
+                    torch.cuda.max_memory_allocated(self.device) / (1024**2),
+                    torch.cuda.max_memory_reserved(self.device) / (1024**2),
+                ],
+                device=self.device,
+                dtype=torch.float64,
+            )
+            self.distributed.max_tensor(peak_memory)
+            metrics["gpu_peak_allocated_mb"] = float(peak_memory[0].item())
+            metrics["gpu_peak_reserved_mb"] = float(peak_memory[1].item())
+        return metrics
 
     @torch.no_grad()
     def validate(self) -> dict[str, float]:
         validation_model = unwrap_model(self.model)
         validation_model.eval()
-        case_metrics: list[dict[str, float]] = []
+        case_records: list[dict[str, Any]] = []
         maximum_cases = self.training_config.get("validation_cases")
         validation_log_every = int(self.training_config.get("validation_log_every", 10))
         progress = tqdm(
             self.validation_loader,
             desc="validation",
             leave=False,
-            disable=not self.distributed.is_main_process,
+            disable=_progress_disabled(self.distributed),
         )
         for local_case_index, batch in enumerate(progress):
             global_case_index = (
@@ -195,7 +308,7 @@ class SourceTrainer:
                 break
             image = batch["image"].to(self.device, non_blocking=True)
             target = batch["target"].to(self.device, non_blocking=True)
-            if target.shape[1] == 0:
+            if target.numel() == 0:
                 continue
             logits = sliding_window_logits(
                 validation_model,
@@ -206,26 +319,38 @@ class SourceTrainer:
                 gaussian_weighting=self.inference_config.get("gaussian_weighting", True),
                 amp=self.inference_config.get("amp", True),
             )
-            case_metrics.append(
-                compute_region_metrics(
-                    logits,
-                    target,
-                    from_logits=True,
-                    threshold=self.inference_config.get("threshold", 0.5),
-                )
+            metrics = compute_region_metrics(
+                logits,
+                target,
+                from_logits=True,
+                threshold=self.inference_config.get("threshold", 0.5),
+                output_mode=self.output_mode,
+                label_schema=self.label_schema,
             )
-            processed_cases = local_case_index + 1
-            if self.distributed.is_main_process and (
-                processed_cases % validation_log_every == 0
-                or processed_cases == len(self.validation_loader)
-            ):
-                LOGGER.info(
-                    "Validation rank 0 local cases %d/%d",
-                    processed_cases,
-                    len(self.validation_loader),
-                )
-        gathered_metrics = self.distributed.all_gather_objects(case_metrics)
-        case_metrics = [metrics for rank_metrics in gathered_metrics for metrics in rank_metrics]
+            case_records.append(
+                {
+                    "case_index": global_case_index,
+                    "case_id": str(batch["id"][0]),
+                    **metrics,
+                }
+            )
+        gathered_records = self.distributed.all_gather_objects(case_records)
+        case_records = [record for rank_records in gathered_records for record in rank_records]
+        case_records.sort(key=lambda record: int(record["case_index"]))
+        if self.distributed.is_main_process:
+            for case_index, case_record in enumerate(case_records, start=1):
+                if case_index % validation_log_every == 0 or case_index == len(case_records):
+                    LOGGER.info(
+                        "Validation case %d/%d id=%s: %s",
+                        case_index,
+                        len(case_records),
+                        case_record["case_id"],
+                        _format_metrics(case_record),
+                    )
+        case_metrics = [
+            {key: value for key, value in record.items() if key not in {"case_id", "case_index"}}
+            for record in case_records
+        ]
         if not case_metrics:
             raise RuntimeError("validation manifest contains no labeled cases")
         return aggregate_metric_dicts(case_metrics)
@@ -251,11 +376,20 @@ class SourceTrainer:
             set_epoch(epoch * max(iterations, 1) + cycle)
 
     def _save(self, epoch: int, filename: str) -> None:
-        save_checkpoint(self._checkpoint_state(epoch), self.checkpoint_directory / filename)
+        destination = self.checkpoint_directory / filename
+        save_checkpoint(self._checkpoint_state(epoch), destination)
+        LOGGER.info(
+            "Saved checkpoint %s at completed epoch %d (%d bytes)",
+            destination,
+            epoch + 1,
+            destination.stat().st_size,
+        )
 
     def _append_history(self, record: dict[str, Any]) -> None:
         with self.history_path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            file.flush()
+            os.fsync(file.fileno())
 
 
 def build_optimizer(model: nn.Module, training_config: dict[str, Any]) -> Optimizer:

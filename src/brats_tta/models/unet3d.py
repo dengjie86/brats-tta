@@ -1,13 +1,44 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
 import torch
 from torch import nn
 
+NormKind = Literal["instance3d", "batch3d"]
+OutputMode = Literal["regions_sigmoid", "classes_softmax"]
+
+
+def _make_norm(
+    kind: NormKind,
+    channels: int,
+    *,
+    eps: float,
+    affine: bool,
+    track_running_stats: bool,
+    momentum: float,
+) -> nn.Module:
+    if kind == "instance3d":
+        return nn.InstanceNorm3d(
+            channels,
+            eps=eps,
+            affine=affine,
+            track_running_stats=track_running_stats,
+        )
+    if kind == "batch3d":
+        return nn.BatchNorm3d(
+            channels,
+            eps=eps,
+            momentum=momentum,
+            affine=affine,
+            track_running_stats=track_running_stats,
+        )
+    raise ValueError(f"unsupported normalization kind: {kind}")
+
 
 class ConvNormAct(nn.Sequential):
-    """Conv3d -> InstanceNorm3d -> LeakyReLU used by the source model."""
+    """Conv3d -> configurable 3D normalization -> LeakyReLU."""
 
     def __init__(
         self,
@@ -17,6 +48,10 @@ class ConvNormAct(nn.Sequential):
         kernel_size: int = 3,
         stride: int = 1,
         eps: float = 1e-5,
+        norm: NormKind = "instance3d",
+        norm_affine: bool = True,
+        track_running_stats: bool = False,
+        norm_momentum: float = 0.1,
         negative_slope: float = 1e-2,
     ) -> None:
         padding = kernel_size // 2
@@ -29,11 +64,13 @@ class ConvNormAct(nn.Sequential):
                 padding=padding,
                 bias=True,
             ),
-            nn.InstanceNorm3d(
+            _make_norm(
+                norm,
                 out_channels,
                 eps=eps,
-                affine=True,
-                track_running_stats=False,
+                affine=norm_affine,
+                track_running_stats=track_running_stats,
+                momentum=norm_momentum,
             ),
             nn.LeakyReLU(negative_slope=negative_slope, inplace=True),
         )
@@ -48,6 +85,10 @@ class EncoderStage(nn.Sequential):
         stride: int,
         num_convs: int,
         norm_eps: float,
+        norm: NormKind,
+        norm_affine: bool,
+        track_running_stats: bool,
+        norm_momentum: float,
         negative_slope: float,
     ) -> None:
         if num_convs < 1:
@@ -58,6 +99,10 @@ class EncoderStage(nn.Sequential):
                 out_channels,
                 stride=stride,
                 eps=norm_eps,
+                norm=norm,
+                norm_affine=norm_affine,
+                track_running_stats=track_running_stats,
+                norm_momentum=norm_momentum,
                 negative_slope=negative_slope,
             )
         ]
@@ -66,6 +111,10 @@ class EncoderStage(nn.Sequential):
                 out_channels,
                 out_channels,
                 eps=norm_eps,
+                norm=norm,
+                norm_affine=norm_affine,
+                track_running_stats=track_running_stats,
+                norm_momentum=norm_momentum,
                 negative_slope=negative_slope,
             )
             for _ in range(num_convs - 1)
@@ -82,6 +131,10 @@ class DecoderStage(nn.Module):
         *,
         num_convs: int,
         norm_eps: float,
+        norm: NormKind,
+        norm_affine: bool,
+        track_running_stats: bool,
+        norm_momentum: float,
         negative_slope: float,
     ) -> None:
         super().__init__()
@@ -98,6 +151,10 @@ class DecoderStage(nn.Module):
             stride=1,
             num_convs=num_convs,
             norm_eps=norm_eps,
+            norm=norm,
+            norm_affine=norm_affine,
+            track_running_stats=track_running_stats,
+            norm_momentum=norm_momentum,
             negative_slope=negative_slope,
         )
 
@@ -112,7 +169,7 @@ class DecoderStage(nn.Module):
 
 
 class PlainUNet3D(nn.Module):
-    """Five-stage nnU-Net-style 3D U-Net for overlapping BraTS regions.
+    """Five-stage nnU-Net-style 3D U-Net for BraTS segmentation.
 
     The default architecture is the source model agreed for this project:
 
@@ -120,9 +177,9 @@ class PlainUNet3D(nn.Module):
     - encoder features: 32, 64, 128, 256, 320
     - two 3x3x3 convolutions per encoder and decoder stage
     - stride-2 convolutional downsampling
-    - InstanceNorm3d(affine=True, track_running_stats=False)
+    - configurable InstanceNorm3d or BatchNorm3d
     - LeakyReLU(negative_slope=0.01)
-    - output logits: ET, TC, WT
+    - output logits: either ET/TC/WT regions or four mutually-exclusive classes
 
     When deep supervision is enabled, outputs are ordered from highest to lowest
     resolution. No sigmoid is applied inside the model.
@@ -134,9 +191,14 @@ class PlainUNet3D(nn.Module):
         out_channels: int = 3,
         features: Sequence[int] = (32, 64, 128, 256, 320),
         *,
+        output_mode: OutputMode | None = None,
         convs_per_stage: int = 2,
         deep_supervision: bool = True,
         norm_eps: float = 1e-5,
+        norm: NormKind = "instance3d",
+        norm_affine: bool = True,
+        track_running_stats: bool = False,
+        norm_momentum: float = 0.1,
         negative_slope: float = 1e-2,
     ) -> None:
         super().__init__()
@@ -147,7 +209,23 @@ class PlainUNet3D(nn.Module):
 
         self.in_channels = int(in_channels)
         self.out_channels = int(out_channels)
+        if output_mode is None:
+            output_mode = "regions_sigmoid" if self.out_channels == 3 else "classes_softmax"
+        if output_mode not in {"regions_sigmoid", "classes_softmax"}:
+            raise ValueError(f"unsupported output_mode: {output_mode}")
+        expected_channels = 3 if output_mode == "regions_sigmoid" else 4
+        if self.out_channels != expected_channels:
+            raise ValueError(
+                f"{output_mode} requires out_channels={expected_channels}, got {self.out_channels}"
+            )
+        if norm not in {"instance3d", "batch3d"}:
+            raise ValueError(f"unsupported norm: {norm}")
         self.features = tuple(int(channel) for channel in features)
+        self.output_mode: OutputMode = output_mode
+        self.norm: NormKind = norm
+        self.norm_affine = bool(norm_affine)
+        self.track_running_stats = bool(track_running_stats)
+        self.norm_momentum = float(norm_momentum)
         self.deep_supervision = bool(deep_supervision)
         self.required_divisibility = 2 ** (len(self.features) - 1)
 
@@ -161,6 +239,10 @@ class PlainUNet3D(nn.Module):
                     stride=1 if stage_index == 0 else 2,
                     num_convs=convs_per_stage,
                     norm_eps=norm_eps,
+                    norm=norm,
+                    norm_affine=norm_affine,
+                    track_running_stats=track_running_stats,
+                    norm_momentum=norm_momentum,
                     negative_slope=negative_slope,
                 )
             )
@@ -178,6 +260,10 @@ class PlainUNet3D(nn.Module):
                     skip_channels,
                     num_convs=convs_per_stage,
                     norm_eps=norm_eps,
+                    norm=norm,
+                    norm_affine=norm_affine,
+                    track_running_stats=track_running_stats,
+                    norm_momentum=norm_momentum,
                     negative_slope=negative_slope,
                 )
             )
@@ -194,7 +280,7 @@ class PlainUNet3D(nn.Module):
             nn.init.kaiming_normal_(module.weight, a=1e-2, mode="fan_out", nonlinearity="leaky_relu")
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.InstanceNorm3d) and module.affine:
+        elif isinstance(module, (nn.InstanceNorm3d, nn.BatchNorm3d)) and module.affine:
             nn.init.ones_(module.weight)
             nn.init.zeros_(module.bias)
 
@@ -242,8 +328,16 @@ def build_source_model(model_config: dict) -> PlainUNet3D:
         in_channels=model_config.get("in_channels", 4),
         out_channels=model_config.get("out_channels", 3),
         features=model_config.get("features", [32, 64, 128, 256, 320]),
+        output_mode=model_config.get("output_mode"),
         convs_per_stage=model_config.get("convs_per_stage", 2),
         deep_supervision=model_config.get("deep_supervision", True),
         norm_eps=model_config.get("norm_eps", 1e-5),
+        norm=model_config.get("norm", "instance3d"),
+        norm_affine=model_config.get("norm_affine", True),
+        track_running_stats=model_config.get(
+            "track_running_stats",
+            model_config.get("norm", "instance3d") == "batch3d",
+        ),
+        norm_momentum=model_config.get("norm_momentum", 0.1),
         negative_slope=model_config.get("negative_slope", 1e-2),
     )

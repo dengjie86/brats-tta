@@ -38,6 +38,11 @@ class DistributedContext:
             dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         return tensor
 
+    def max_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.distributed:
+            dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
+        return tensor
+
     def all_gather_objects(self, value: T) -> list[T]:
         if not self.distributed:
             return [value]
@@ -85,7 +90,24 @@ def initialize_distributed(requested_device: str = "auto") -> DistributedContext
     return DistributedContext(True, rank, local_rank, world_size, device, backend)
 
 
-def wrap_model_for_distributed(model: nn.Module, context: DistributedContext) -> nn.Module:
+def wrap_model_for_distributed(
+    model: nn.Module,
+    context: DistributedContext,
+    *,
+    sync_batchnorm: bool = False,
+) -> nn.Module:
+    """Move a model to its device and wrap it for DDP.
+
+    If requested, synchronize BatchNorm statistics across CUDA ranks. This is
+    useful for the intended per-GPU batch size of one; ordinary BatchNorm is
+    retained for single-process and CPU smoke-test runs.
+    """
+
+    if sync_batchnorm:
+        if context.distributed and context.device.type != "cuda":
+            raise RuntimeError("sync_batchnorm requires distributed CUDA training")
+        if context.distributed and context.device.type == "cuda":
+            model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model = model.to(context.device)
     if not context.distributed:
         return model
@@ -95,7 +117,7 @@ def wrap_model_for_distributed(model: nn.Module, context: DistributedContext) ->
         model,
         device_ids=device_ids,
         output_device=output_device,
-        broadcast_buffers=False,
+        broadcast_buffers=sync_batchnorm,
         find_unused_parameters=False,
         gradient_as_bucket_view=True,
     )

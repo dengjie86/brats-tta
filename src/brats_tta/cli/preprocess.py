@@ -17,6 +17,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", required=True, help="Directory for preprocessed case arrays")
     parser.add_argument("--output-manifest", required=True, help="Resulting preprocessed JSON manifest")
     parser.add_argument("--label-schema", choices=sorted(LABEL_SCHEMAS), default="brats_modern")
+    parser.add_argument(
+        "--output-mode",
+        choices=("regions_sigmoid", "classes_softmax"),
+        default="regions_sigmoid",
+        help="Cached target representation: nested ET/TC/WT regions or four-class indices",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     return parser
@@ -30,6 +36,7 @@ def main() -> None:
         args.output_root,
         args.output_manifest,
         label_schema=args.label_schema,
+        output_mode=args.output_mode,
         overwrite=args.overwrite,
     )
     LOGGER.info("Wrote preprocessed manifest to %s", args.output_manifest)

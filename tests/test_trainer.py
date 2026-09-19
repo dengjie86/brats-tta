@@ -91,11 +91,15 @@ def test_complete_train_validate_checkpoint_and_resume(tmp_path: Path) -> None:
     latest = output_directory / "checkpoints" / "latest.pt"
     assert latest.exists()
     assert (output_directory / "checkpoints" / "best.pt").exists()
+    assert (output_directory / "checkpoints" / "last.pt").exists()
     assert (output_directory / "checkpoints" / "epoch_0001.pt").exists()
     with (output_directory / "history.jsonl").open(encoding="utf-8") as file:
         record = json.loads(file.readline())
     assert record["epoch"] == 0
+    assert record["completed_epoch"] == 1
+    assert record["global_step"] == 1
     assert "train_loss" in record and "val_dice_mean" in record
+    assert set(record["checkpoints"]) == {"best.pt", "epoch_0001.pt", "last.pt", "latest.pt"}
 
     resumed = _build_trainer(output_directory)
     resumed.resume(latest)

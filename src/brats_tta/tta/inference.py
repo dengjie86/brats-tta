@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import torch
 from torch import nn
@@ -23,8 +23,9 @@ def sliding_window_tent_logits(
     overlap: float = 0.5,
     sw_batch_size: int = 1,
     gaussian_weighting: bool = True,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[torch.Tensor, dict[str, float | int]]:
-    """Run online patch-by-patch Tent and stitch pre-update patch predictions."""
+    """Run online Tent, stitching the last forward from each patch's step loop."""
 
     if image.ndim != 5 or image.shape[0] != 1:
         raise ValueError(f"expected one image [1, C, D, H, W], got {tuple(image.shape)}")
@@ -63,6 +64,9 @@ def sliding_window_tent_logits(
             dim=0,
         )
         result = adapter.predict_and_adapt(patches)
+        if progress_callback is not None:
+            progress_callback(batch_start // sw_batch_size + 1,
+                              (len(locations) + sw_batch_size - 1) // sw_batch_size)
         batch_logits = result.logits
         entropies.append(result.entropy)
         if output_accumulator is None:
@@ -95,6 +99,7 @@ def sliding_window_tent_logits(
     if tuple(logits.shape[2:]) != original_shape:
         raise RuntimeError(f"sliding-window crop returned {logits.shape[2:]}, expected {original_shape}")
     return logits, {
-        "adaptation_updates": len(entropies),
+        "adaptation_patch_batches": len(entropies),
+        "adaptation_updates": len(entropies) * adapter.steps,
         "adaptation_entropy": float(sum(entropies) / len(entropies)),
     }

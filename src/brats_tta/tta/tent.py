@@ -5,15 +5,13 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-
-def binary_prediction_entropy(logits: torch.Tensor) -> torch.Tensor:
-    """Bernoulli entropy for the independent ET/TC/WT sigmoid outputs."""
-
-    probabilities = torch.sigmoid(logits.float()).clamp(1e-7, 1.0 - 1e-7)
-    return -(
-        probabilities * probabilities.log()
-        + (1.0 - probabilities) * (1.0 - probabilities).log()
-    )
+from brats_tta.tta.dense_objectives import (
+    DenseReduction,
+    dense_entropy_loss,
+)
+from brats_tta.tta.dense_objectives import (
+    binary_prediction_entropy as binary_prediction_entropy,
+)
 
 
 def configure_tent(model: nn.Module) -> tuple[list[nn.Parameter], list[str]]:
@@ -79,19 +77,38 @@ class TentAdapter:
         steps: int = 1,
         use_amp: bool = True,
         brain_mask: bool = False,
+        weight_decay: float = 0.0,
+        normalize_entropy: bool = False,
+        objective_reduction: DenseReduction | None = None,
     ) -> None:
         if learning_rate <= 0:
             raise ValueError("Tent learning rate must be positive")
         if steps <= 0:
             raise ValueError("Tent steps must be positive")
+        if weight_decay < 0:
+            raise ValueError("weight_decay must be nonnegative")
         self.model = model
         self.parameters, self.parameter_names = configure_tent(model)
         self.learning_rate = float(learning_rate)
         self.steps = int(steps)
         self.use_amp = bool(use_amp)
         self.brain_mask = bool(brain_mask)
+        self.objective_reduction: DenseReduction = (
+            objective_reduction if objective_reduction is not None else "brain" if self.brain_mask else "all"
+        )
+        if self.objective_reduction not in {
+            "all",
+            "brain",
+            "foreground_background_balanced",
+        }:
+            raise ValueError(f"unknown Tent objective reduction: {self.objective_reduction}")
+        self.normalize_entropy = bool(normalize_entropy)
         self._source_parameters = [parameter.detach().clone() for parameter in self.parameters]
-        self.optimizer = torch.optim.Adam(self.parameters, lr=self.learning_rate)
+        self.optimizer = torch.optim.Adam(self.parameters, lr=self.learning_rate, weight_decay=weight_decay)
+        self.scaler = torch.amp.GradScaler(
+            "cuda", enabled=self.use_amp and self.parameters[0].device.type == "cuda"
+        )
+        self._source_scaler_state = self.scaler.state_dict().copy()
 
     @torch.no_grad()
     def reset(self) -> None:
@@ -99,6 +116,7 @@ class TentAdapter:
             parameter.copy_(source)
         self.optimizer.state.clear()
         self.optimizer.zero_grad(set_to_none=True)
+        self.scaler.load_state_dict(self._source_scaler_state)
 
     @torch.enable_grad()
     def predict_and_adapt(self, images: torch.Tensor) -> TentStepResult:
@@ -115,17 +133,21 @@ class TentAdapter:
                 logits = self.model(images)
                 if isinstance(logits, (tuple, list)):
                     logits = logits[0]
-            if output_for_stitching is None:
-                output_for_stitching = logits.detach().float()
-            entropy = binary_prediction_entropy(logits)
-            if self.brain_mask:
-                foreground = images.detach().abs().sum(dim=1, keepdim=True) > 0
-                mask = foreground.expand_as(entropy)
-                loss = entropy[mask].mean() if mask.any() else entropy.mean()
-            else:
-                loss = entropy.mean()
-            loss.backward()
-            self.optimizer.step()
+            # As in Tent's multi-step loop, return the last forward's output.
+            # With one step this is the prediction before that step's update.
+            output_for_stitching = logits.detach().float()
+            loss = dense_entropy_loss(
+                logits,
+                images,
+                reduction=self.objective_reduction,
+                normalize=self.normalize_entropy,
+            )
+            # Averaging over 3 * 128**3 outputs produces tiny per-logit gradients.
+            # Computing entropy in float32 alone does not prevent underflow when
+            # those gradients flow back into the float16 network outputs.
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             entropy_value = float(loss.detach().item())
         assert output_for_stitching is not None
         return TentStepResult(logits=output_for_stitching, entropy=entropy_value)

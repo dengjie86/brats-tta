@@ -68,8 +68,14 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("only the plain_unet3d source architecture is implemented")
     if model.get("in_channels", 4) != 4:
         raise ValueError("the fixed BraTS source baseline requires four input modalities")
-    if model.get("out_channels", 3) != 3:
-        raise ValueError("the fixed BraTS source baseline requires ET/TC/WT output channels")
+    output_mode = model.get("output_mode")
+    if output_mode is None:
+        output_mode = "regions_sigmoid" if model.get("out_channels", 3) == 3 else "classes_softmax"
+    if output_mode not in {"regions_sigmoid", "classes_softmax"}:
+        raise ValueError("model.output_mode must be regions_sigmoid or classes_softmax")
+    expected_channels = 3 if output_mode == "regions_sigmoid" else 4
+    if model.get("out_channels", expected_channels) != expected_channels:
+        raise ValueError(f"{output_mode} requires out_channels={expected_channels}")
     features = model.get("features", [])
     if not isinstance(features, list) or len(features) < 2:
         raise ValueError("model.features must define at least two stages")
@@ -77,12 +83,15 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("model.features must contain positive integers")
     if int(model.get("convs_per_stage", 2)) < 1:
         raise ValueError("model.convs_per_stage must be positive")
-    if model.get("norm", "instance3d") != "instance3d":
-        raise ValueError("PlainUNet3D currently implements InstanceNorm3d only")
+    norm = model.get("norm", "instance3d")
+    if norm not in {"instance3d", "batch3d"}:
+        raise ValueError("model.norm must be instance3d or batch3d")
     if not bool(model.get("norm_affine", True)):
-        raise ValueError("the fixed source baseline requires InstanceNorm3d affine=True")
-    if bool(model.get("track_running_stats", False)):
-        raise ValueError("the fixed source baseline requires InstanceNorm3d track_running_stats=False")
+        raise ValueError("source normalization requires affine=True")
+    if norm == "instance3d" and bool(model.get("track_running_stats", False)):
+        raise ValueError("InstanceNorm3d source baseline requires track_running_stats=False")
+    if norm == "batch3d" and float(model.get("norm_momentum", 0.1)) <= 0:
+        raise ValueError("BatchNorm3d norm_momentum must be positive")
     if model.get("activation", "leaky_relu") != "leaky_relu":
         raise ValueError("PlainUNet3D currently implements LeakyReLU only")
     if float(model.get("dropout", 0.0)) != 0.0:

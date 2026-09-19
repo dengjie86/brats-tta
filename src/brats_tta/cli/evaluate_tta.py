@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
+import hashlib
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +19,7 @@ from brats_tta.engine.inference import sliding_window_logits
 from brats_tta.metrics.segmentation import compute_region_metrics
 from brats_tta.tta.inference import sliding_window_tent_logits
 from brats_tta.tta.tent import TentAdapter, configure_norm_stats
+from brats_tta.utils.atomic_io import atomic_write_text
 from brats_tta.utils.reproducibility import resolve_device
 
 LOGGER = logging.getLogger(__name__)
@@ -48,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, help="Evaluate only the first N cases (smoke tests)")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--stall-trace-seconds", type=int, default=300,
+                        help="Dump the Python stack after this long without progress (0 disables)")
     return parser
 
 
@@ -57,6 +63,7 @@ def main() -> None:
     device = resolve_device(args.device)
     output_directory = Path(args.output_dir).expanduser().resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
+    faulthandler.enable()
     dataset = BraTSDataset(args.manifest, training=False)
     case_count = min(len(dataset), args.limit) if args.limit else len(dataset)
     if case_count <= 0:
@@ -90,6 +97,17 @@ def _evaluate_method(
     records = _load_records(records_path)
     completed_ids = {record["id"] for record in records}
 
+    def progress(stage: str, **details: Any) -> None:
+        _write_json(output_directory / "progress.json", {
+            "pid": os.getpid(), "method": method, "stage": stage,
+            "updated_at_unix": time.time(), "completed_cases": len(completed_ids),
+            "expected_cases": case_count, **details,
+        })
+        if args.stall_trace_seconds > 0:
+            faulthandler.dump_traceback_later(args.stall_trace_seconds, repeat=True)
+
+    progress("loading_model")
+
     model, config, checkpoint = load_model_from_checkpoint(args.checkpoint, device)
     checkpoint_metadata = {
         "completed_epoch": int(checkpoint["epoch"]) + 1,
@@ -106,6 +124,10 @@ def _evaluate_method(
         args.threshold if args.threshold is not None else inference.get("threshold", 0.5)
     )
     amp = bool(args.amp if args.amp is not None else inference.get("amp", True))
+    if not amp:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.set_float32_matmul_precision("highest")
     method_metadata: dict[str, Any] = {}
     adapter: TentAdapter | None = None
     if method == "norm":
@@ -121,6 +143,8 @@ def _evaluate_method(
         method_metadata.update(
             {
                 "optimizer": "Adam",
+                "implementation": "instance_norm_affine_entropy_v2",
+                "gradient_scaling": adapter.scaler.is_enabled(),
                 "learning_rate": args.tent_lr,
                 "steps_per_patch_batch": args.tent_steps,
                 "episodic": not args.continual,
@@ -131,6 +155,31 @@ def _evaluate_method(
         )
     elif method != "source":
         raise ValueError(f"unknown method: {method}")
+
+    def file_hash(path: str) -> str:
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    run_settings = {
+        "evaluation_version": "brain_mask_support_v1",
+        "method": method,
+        "manifest_sha256": file_hash(args.manifest),
+        "checkpoint_sha256": file_hash(args.checkpoint),
+        "patch_size": list(patch_size), "overlap": overlap, "sw_batch_size": sw_batch_size,
+        "threshold": threshold, "amp": amp,
+        "gaussian_weighting": inference.get("gaussian_weighting", True),
+        "method_settings": method_metadata,
+    }
+    _validate_run_settings(output_directory / f"{method}_run_settings.json", run_settings,
+                           has_records=bool(records), overwrite=args.overwrite)
+    if method == "tent" and args.continual and records:
+        raise ValueError(
+            "Continual TENT cannot resume without adapted model state; "
+            "use a new output directory"
+        )
 
     LOGGER.info(
         "Method=%s cases=%d patch=%s overlap=%.3f amp=%s device=%s already_complete=%d",
@@ -144,10 +193,13 @@ def _evaluate_method(
     )
     method_start = time.perf_counter()
     for index in range(case_count):
-        sample = dataset[index]
-        case_id = str(sample["id"])
+        case_id = str(dataset.cases[index]["id"])
         if case_id in completed_ids:
             continue
+        progress("loading_case", case_id=case_id, case_index=index)
+        LOGGER.info("%s %d/%d %s: loading", method, index + 1, case_count, case_id)
+        sample = dataset[index]
+        progress("preparing_inference", case_id=case_id, case_index=index)
         if adapter is not None and not args.continual:
             adapter.reset()
         if device.type == "cuda":
@@ -159,6 +211,7 @@ def _evaluate_method(
         _synchronize(device)
         case_start = time.perf_counter()
         adaptation: dict[str, float | int] = {}
+        progress("inference", case_id=case_id, case_index=index)
         if adapter is None:
             logits = sliding_window_logits(
                 model,
@@ -170,6 +223,12 @@ def _evaluate_method(
                 amp=amp,
             )
         else:
+            def patch_progress(done: int, total: int) -> None:
+                progress("adapting", case_id=case_id, case_index=index,
+                         patch_batches_done=done, patch_batches_total=total)
+                if done == 1 or done % 6 == 0 or done == total:
+                    LOGGER.info("tent %s: patch batches %d/%d", case_id, done, total)
+
             logits, adaptation = sliding_window_tent_logits(
                 model,
                 adapter,
@@ -178,9 +237,11 @@ def _evaluate_method(
                 overlap=overlap,
                 sw_batch_size=sw_batch_size,
                 gaussian_weighting=inference.get("gaussian_weighting", True),
+                progress_callback=patch_progress,
             )
         _synchronize(device)
         elapsed = time.perf_counter() - case_start
+        progress("metrics", case_id=case_id, case_index=index)
         metrics = compute_region_metrics(logits.cpu(), target, threshold=threshold)
         peak_memory = (
             int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else 0
@@ -197,6 +258,7 @@ def _evaluate_method(
         _append_jsonl(records_path, record)
         records.append(record)
         completed_ids.add(case_id)
+        progress("case_complete", case_id=case_id, case_index=index)
         LOGGER.info(
             "%s %d/%d %s: mean=%.4f ET=%.4f TC=%.4f WT=%.4f seconds=%.1f peak=%.2fGiB",
             method,
@@ -210,7 +272,7 @@ def _evaluate_method(
             elapsed,
             peak_memory / (1024**3),
         )
-        del image, target, logits
+        del image, target, logits, sample
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
@@ -231,6 +293,8 @@ def _evaluate_method(
         "amp": amp,
         "device": str(device),
         "method_settings": method_metadata,
+        "preprocessing": dataset.manifest.get("brain_extraction"),
+        "run_settings": run_settings,
         "metrics_mean": _aggregate(selected_records, np.mean),
         "metrics_std": _aggregate(selected_records, np.std),
         "metrics_median": _aggregate(selected_records, np.median),
@@ -238,10 +302,24 @@ def _evaluate_method(
         "invocation_seconds": time.perf_counter() - method_start,
     }
     _write_json(summary_path, summary)
+    progress("complete")
+    if args.stall_trace_seconds > 0:
+        faulthandler.cancel_dump_traceback_later()
     print(json.dumps(summary, indent=2, ensure_ascii=False), flush=True)
     del model, adapter
     if device.type == "cuda":
         torch.cuda.empty_cache()
+
+
+def _validate_run_settings(path: Path, expected: dict, *, has_records: bool, overwrite: bool) -> None:
+    """Prevent silent reuse of scores from another mask, checkpoint or step count."""
+    if not overwrite:
+        if path.is_file():
+            if json.loads(path.read_text(encoding="utf-8")) != expected:
+                raise ValueError("Evaluation settings changed; use a new output directory")
+        elif has_records:
+            raise ValueError("Existing results lack provenance; use a new output directory")
+    _write_json(path, expected)
 
 
 def _aggregate(records: list[dict[str, Any]], reducer: Any) -> dict[str, float]:
@@ -273,10 +351,7 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8") as file:
-        json.dump(payload, file, indent=2, ensure_ascii=False)
-    temporary.replace(path)
+    atomic_write_text(path, json.dumps(payload, indent=2, ensure_ascii=False))
 
 
 def _synchronize(device: torch.device) -> None:

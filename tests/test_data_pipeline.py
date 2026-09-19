@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import nibabel as nib
@@ -11,6 +12,7 @@ from torch.utils.data import DataLoader
 from brats_tta.data.brats import BraTSDataset, DistributedEvalSampler
 from brats_tta.data.manifest import discover_brats_cases, load_manifest, split_cases, write_manifest
 from brats_tta.data.preprocessing import preprocess_manifest
+from brats_tta.data.transforms import SourcePatchTransform
 
 
 def _write_case(root: Path, case_id: str, *, with_label: bool = True) -> None:
@@ -164,3 +166,63 @@ def test_distributed_eval_sampler_has_no_padding_or_duplicates() -> None:
 
     assert shards == [[0, 3, 6], [1, 4], [2, 5]]
     assert sorted(index for shard in shards for index in shard) == list(range(7))
+
+
+def test_source_transform_flips_only_configured_axis() -> None:
+    image = torch.arange(24, dtype=torch.float32).reshape(1, 2, 3, 4)
+    target = image[0].long()
+    transform = SourcePatchTransform(
+        (2, 3, 4),
+        foreground_oversample=0.0,
+        flip_probability=1.0,
+        flip_axes=(0,),
+        intensity_scale_probability=0.0,
+        intensity_shift_probability=0.0,
+        noise_probability=0.0,
+    )
+
+    transformed_image, transformed_target = transform(image, target)
+
+    assert torch.equal(transformed_image, torch.flip(image, dims=(1,)))
+    assert torch.equal(transformed_target, torch.flip(target, dims=(0,)))
+
+
+def test_source_transform_gamma_matches_sign_preserving_torchio_rule() -> None:
+    image = torch.tensor([[[[-2.0, -1.0, 0.0, 1.0, 2.0]]]])
+    target = torch.zeros((1, 1, 5), dtype=torch.long)
+    transform = SourcePatchTransform(
+        (1, 1, 5),
+        foreground_oversample=0.0,
+        flip_probability=0.0,
+        gamma_probability=1.0,
+        gamma_log_range=(math.log(2.0), math.log(2.0)),
+        intensity_scale_probability=0.0,
+        intensity_shift_probability=0.0,
+        noise_probability=0.0,
+    )
+
+    transformed_image, _ = transform(image, target)
+
+    expected = torch.tensor([[[[-4.0, -1.0, 0.0, 1.0, 4.0]]]])
+    assert torch.equal(transformed_image, expected)
+
+
+def test_source_transform_identity_affine_preserves_image_and_class_labels() -> None:
+    image = torch.randn((4, 5, 6, 7), generator=torch.Generator().manual_seed(17))
+    target = torch.randint(0, 4, (5, 6, 7), generator=torch.Generator().manual_seed(23))
+    transform = SourcePatchTransform(
+        (5, 6, 7),
+        foreground_oversample=0.0,
+        flip_probability=0.0,
+        affine_probability=1.0,
+        affine_scale_range=(1.0, 1.0),
+        affine_degrees=0.0,
+        intensity_scale_probability=0.0,
+        intensity_shift_probability=0.0,
+        noise_probability=0.0,
+    )
+
+    transformed_image, transformed_target = transform(image, target)
+
+    assert torch.allclose(transformed_image, image, atol=1e-6)
+    assert torch.equal(transformed_target, target)

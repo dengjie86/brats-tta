@@ -22,10 +22,19 @@ def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args.config)
     model = build_source_model(config["model"])
-    normalization_layers = [module for module in model.modules() if isinstance(module, nn.InstanceNorm3d)]
+    instance_norm_layers = [module for module in model.modules() if isinstance(module, nn.InstanceNorm3d)]
+    batch_norm_layers = [module for module in model.modules() if isinstance(module, nn.BatchNorm3d)]
     print(model)
     print(f"parameters: {model.parameter_count():,}")
-    print(f"InstanceNorm3d layers: {len(normalization_layers)}")
+    print(f"output mode: {model.output_mode}")
+    print(f"InstanceNorm3d layers: {len(instance_norm_layers)}")
+    print(f"BatchNorm3d layers: {len(batch_norm_layers)}")
+    if batch_norm_layers:
+        print(
+            "BatchNorm3d running stats: "
+            f"track={batch_norm_layers[0].track_running_stats}, "
+            f"momentum={batch_norm_layers[0].momentum}"
+        )
     print(f"required spatial divisibility: {model.required_divisibility}")
     if args.forward_shape:
         model.eval()

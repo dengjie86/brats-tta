@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -9,10 +10,21 @@ from brats_tta.models import build_source_model
 from brats_tta.utils.checkpoint import load_checkpoint
 
 
-def configure_logging(verbose: bool = False, *, rank: int = 0) -> None:
+def configure_logging(
+    verbose: bool = False,
+    *,
+    rank: int = 0,
+    log_file: str | Path | None = None,
+) -> None:
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file is not None and rank == 0:
+        log_path = Path(log_file).expanduser().resolve()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path, mode="a", encoding="utf-8"))
     logging.basicConfig(
         level=(logging.DEBUG if verbose else logging.INFO) if rank == 0 else logging.WARNING,
         format=f"%(asctime)s | rank={rank} | %(levelname)s | %(name)s | %(message)s",
+        handlers=handlers,
         force=True,
     )
 

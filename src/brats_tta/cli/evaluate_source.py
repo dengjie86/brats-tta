@@ -41,6 +41,7 @@ def main() -> None:
         manifest,
         training=False,
         label_schema=config["data"].get("label_schema", "brats_modern"),
+        output_mode=config["model"].get("output_mode", "regions_sigmoid"),
     )
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
     inference = config["inference"]
@@ -48,7 +49,7 @@ def main() -> None:
     with torch.no_grad():
         for batch in tqdm(loader, desc="evaluate"):
             target = batch["target"].to(device)
-            if target.shape[1] == 0:
+            if target.numel() == 0:
                 raise ValueError(f"case {batch['id'][0]} has no label")
             logits = sliding_window_logits(
                 model,
@@ -59,7 +60,15 @@ def main() -> None:
                 gaussian_weighting=inference.get("gaussian_weighting", True),
                 amp=inference.get("amp", True),
             )
-            results.append(compute_region_metrics(logits, target, threshold=inference.get("threshold", 0.5)))
+            results.append(
+                compute_region_metrics(
+                    logits,
+                    target,
+                    threshold=inference.get("threshold", 0.5),
+                    output_mode=config["model"].get("output_mode", "regions_sigmoid"),
+                    label_schema=config["data"].get("label_schema", "brats_modern"),
+                )
+            )
     aggregate = aggregate_metric_dicts(results)
     print(json.dumps(aggregate, indent=2, ensure_ascii=False))
     if args.output:

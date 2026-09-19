@@ -42,6 +42,7 @@ def main() -> None:
         args.manifest,
         training=False,
         label_schema=config["data"].get("label_schema", "brats_modern"),
+        output_mode=config["model"].get("output_mode", "regions_sigmoid"),
     )
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
     inference = config["inference"]
@@ -61,20 +62,31 @@ def main() -> None:
                 gaussian_weighting=inference.get("gaussian_weighting", True),
                 amp=inference.get("amp", True),
             )
-            probabilities = torch.sigmoid(logits)
+            output_mode = config["model"].get("output_mode", "regions_sigmoid")
+            probabilities = (
+                torch.softmax(logits, dim=1)
+                if output_mode == "classes_softmax"
+                else torch.sigmoid(logits)
+            )
             save_brats_prediction(
                 probabilities,
                 reference,
                 output_directory / f"{case_id}-seg.nii.gz",
                 label_schema=config["data"].get("label_schema", "brats_modern"),
+                output_mode=output_mode,
                 threshold=inference.get("threshold", 0.5),
                 enforce_hierarchy=inference.get("enforce_hierarchy", True),
             )
             if args.save_probabilities:
+                probability_kind = "classes" if output_mode == "classes_softmax" else "regions"
                 np.savez_compressed(
-                    output_directory / f"{case_id}-regions.npz",
+                    output_directory / f"{case_id}-{probability_kind}.npz",
                     probabilities=probabilities[0].cpu().numpy().astype(np.float16),
-                    region_names=np.asarray(["ET", "TC", "WT"]),
+                    region_names=np.asarray(
+                        ["background", "ncr_net", "edema", "et"]
+                        if output_mode == "classes_softmax"
+                        else ["ET", "TC", "WT"]
+                    ),
                 )
     LOGGER.info("Predictions written to %s", output_directory)
 
