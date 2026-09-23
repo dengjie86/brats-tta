@@ -21,7 +21,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
+    "surface-distance>=0.1",
 ]
+metrics = ["surface-distance>=0.1"]
 tensorboard = ["tensorboard>=2.15"]
 brain-extraction = ["HD-BET==2.0.1", "nnunetv2==2.6.2"]
 
@@ -32,7 +34,6 @@ brats-extract-brain-masks = "brats_tta.cli.extract_brain_masks:main"
 brats-train-source = "brats_tta.cli.train_source:main"
 brats-evaluate-source = "brats_tta.cli.evaluate_source:main"
 brats-evaluate-tta = "brats_tta.cli.evaluate_tta:main"
-brats-evaluate-tta-rounds = "brats_tta.cli.evaluate_tta_rounds:main"
 brats-infer = "brats_tta.cli.infer:main"
 brats-inspect-model = "brats_tta.cli.inspect_model:main"
 

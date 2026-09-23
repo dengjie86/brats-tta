@@ -12,13 +12,7 @@ from brats_tta.models import build_source_model
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_canonical_config_is_valid() -> None:
-    config = load_config(PROJECT_ROOT / "configs" / "source_brats_gli.yaml")
-    assert config["model"]["features"] == [32, 64, 128, 256, 320]
-    assert config["model"]["track_running_stats"] is False
-
-
-def test_large_four_class_source_config_is_valid() -> None:
+def test_canonical_source_config_is_valid() -> None:
     config = load_config(PROJECT_ROOT / "configs" / "source_brats_gli_4class_bn.yaml")
     validate_config(config)
 
@@ -53,28 +47,12 @@ def test_large_four_class_source_config_is_valid() -> None:
     assert build_source_model(config["model"]).parameter_count() == 31_199_796
 
 
-def test_scale_shift_ablation_changes_only_the_intended_augmentation_probabilities() -> None:
-    main = load_config(PROJECT_ROOT / "configs" / "source_brats_gli_4class_bn.yaml")
-    ablation = load_config(PROJECT_ROOT / "configs" / "source_brats_gli_4class_bn_scale_shift.yaml")
-    main_augmentation = main["data"]["augmentation"]
-    ablation_augmentation = ablation["data"]["augmentation"]
-
-    differing_keys = {
-        key
-        for key in main_augmentation
-        if main_augmentation[key] != ablation_augmentation[key]
-    }
-    assert differing_keys == {"intensity_scale_probability", "intensity_shift_probability"}
-    assert ablation_augmentation["intensity_scale_probability"] == 1.0
-    assert ablation_augmentation["intensity_shift_probability"] == 1.0
-
-
 @pytest.mark.parametrize(
     ("section", "key", "value", "message"),
     [
-        ("model", "track_running_stats", True, "track_running_stats=False"),
+        ("model", "norm", "instance3d", "track_running_stats=False"),
         ("model", "dropout", 0.1, "does not use dropout"),
-        ("inference", "patch_size", [127, 128, 128], "divisible by 16"),
+        ("inference", "patch_size", [127, 128, 128], "divisible by 32"),
     ],
 )
 def test_unsupported_source_settings_fail_fast(
@@ -83,7 +61,7 @@ def test_unsupported_source_settings_fail_fast(
     value: object,
     message: str,
 ) -> None:
-    config = load_config(PROJECT_ROOT / "configs" / "source_brats_gli.yaml")
+    config = load_config(PROJECT_ROOT / "configs" / "source_brats_gli_4class_bn.yaml")
     config = copy.deepcopy(config)
     config[section][key] = value
     with pytest.raises(ValueError, match=message):
@@ -91,7 +69,7 @@ def test_unsupported_source_settings_fail_fast(
 
 
 def test_training_command_line_overrides() -> None:
-    config = load_config(PROJECT_ROOT / "configs" / "source_brats_gli.yaml")
+    config = load_config(PROJECT_ROOT / "configs" / "source_brats_gli_4class_bn.yaml")
     args = build_parser().parse_args(
         [
             "--config",
@@ -107,9 +85,9 @@ def test_training_command_line_overrides() -> None:
             "--epochs",
             "20",
             "--patch-size",
-            "112",
-            "112",
-            "112",
+            "96",
+            "96",
+            "96",
             "--amp",
             "--set",
             "data.augmentation.noise_probability=0.0",
@@ -125,13 +103,13 @@ def test_training_command_line_overrides() -> None:
     assert updated["training"]["batch_size"] == 1
     assert updated["training"]["epochs"] == 20
     assert updated["training"]["amp"] is True
-    assert updated["data"]["patch_size"] == [112, 112, 112]
-    assert updated["inference"]["patch_size"] == [112, 112, 112]
+    assert updated["data"]["patch_size"] == [96, 96, 96]
+    assert updated["inference"]["patch_size"] == [96, 96, 96]
     assert updated["data"]["augmentation"]["noise_probability"] == 0.0
     assert updated["training"]["validation_cases"] == 3
 
 
 def test_generic_override_rejects_unknown_keys() -> None:
-    config = load_config(PROJECT_ROOT / "configs" / "source_brats_gli.yaml")
+    config = load_config(PROJECT_ROOT / "configs" / "source_brats_gli_4class_bn.yaml")
     with pytest.raises(KeyError, match="unknown configuration key"):
         apply_config_overrides(config, ["training.learnng_rate=0.1"])

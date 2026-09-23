@@ -1,25 +1,69 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 from torch import nn
 
-from brats_tta.tta.dense_objectives import (
-    DenseReduction,
-    dense_entropy_loss,
-)
-from brats_tta.tta.dense_objectives import (
-    binary_prediction_entropy as binary_prediction_entropy,
-)
+TentBNScope = Literal["all", "encoder", "decoder", "shallow", "deep"]
 
 
-def configure_tent(model: nn.Module) -> tuple[list[nn.Parameter], list[str]]:
-    """Freeze the network except InstanceNorm affine scale and shift parameters.
+def categorical_prediction_entropy(logits: torch.Tensor) -> torch.Tensor:
+    """Return voxel-wise categorical entropy for mutually exclusive classes."""
 
-    InstanceNorm3d with ``track_running_stats=False`` uses current-instance
-    statistics in both train and eval modes.  Keeping eval mode also disables
-    deep-supervision outputs while preserving the statistics required by Tent.
+    if logits.ndim != 5 or logits.shape[1] < 2:
+        raise ValueError("Tent requires [B,C,D,H,W] logits with C >= 2")
+    log_probabilities = torch.log_softmax(logits.float(), dim=1)
+    probabilities = log_probabilities.exp()
+    return -(probabilities * log_probabilities).sum(dim=1)
+
+
+def _module_stage(module_name: str, branch: str) -> int | None:
+    prefix = f"{branch}."
+    if not module_name.startswith(prefix):
+        return None
+    stage_text = module_name[len(prefix) :].split(".", 1)[0]
+    return int(stage_text) if stage_text.isdigit() else None
+
+
+def _scope_matches(module_name: str, scope: TentBNScope) -> bool:
+    """Return whether a BN layer belongs to the requested adaptation scope."""
+
+    if scope == "all":
+        return True
+    if scope == "encoder":
+        return module_name.startswith("encoder.")
+    if scope == "decoder":
+        return module_name.startswith("decoder.")
+
+    encoder_stage = _module_stage(module_name, "encoder")
+    decoder_stage = _module_stage(module_name, "decoder")
+    if scope == "shallow":
+        return (encoder_stage is not None and encoder_stage <= 2) or (
+            decoder_stage is not None and decoder_stage >= 3
+        )
+    if scope == "deep":
+        return (encoder_stage is not None and encoder_stage >= 3) or (
+            decoder_stage is not None and decoder_stage <= 2
+        )
+    raise ValueError(f"unsupported Tent BN scope: {scope}")
+
+
+def configure_tent(
+    model: nn.Module,
+    *,
+    bn_scope: TentBNScope = "all",
+    update_affine: bool = True,
+    use_batch_stats: bool = True,
+    allow_empty: bool = False,
+) -> tuple[list[nn.Parameter], list[str]]:
+    """Freeze the network except affine BatchNorm scale and shift parameters.
+
+    BatchNorm running buffers can be disabled so target patch statistics are
+    used, matching the original Tent configuration.  ``bn_scope`` selects the
+    affine parameters that receive entropy gradients; statistics are configured
+    independently for every BatchNorm layer.
     """
 
     model.eval()
@@ -27,7 +71,13 @@ def configure_tent(model: nn.Module) -> tuple[list[nn.Parameter], list[str]]:
     parameters: list[nn.Parameter] = []
     names: list[str] = []
     for module_name, module in model.named_modules():
-        if not isinstance(module, nn.InstanceNorm3d) or not module.affine:
+        if not isinstance(module, nn.BatchNorm3d) or not module.affine:
+            continue
+        if use_batch_stats:
+            module.track_running_stats = False
+            module.running_mean = None
+            module.running_var = None
+        if not update_affine or not _scope_matches(module_name, bn_scope):
             continue
         for parameter_name in ("weight", "bias"):
             parameter = getattr(module, parameter_name)
@@ -36,28 +86,9 @@ def configure_tent(model: nn.Module) -> tuple[list[nn.Parameter], list[str]]:
             parameter.requires_grad_(True)
             parameters.append(parameter)
             names.append(f"{module_name}.{parameter_name}")
-    if not parameters:
-        raise ValueError("Tent requires affine InstanceNorm3d parameters")
+    if update_affine and not parameters and not allow_empty:
+        raise ValueError("Tent requires affine BatchNorm3d parameters in the selected scope")
     return parameters, names
-
-
-def configure_norm_stats(model: nn.Module) -> dict[str, int | bool]:
-    """Configure the statistics-only baseline and describe its effective state.
-
-    The source model has no persistent normalization buffers.  Consequently,
-    statistics-only adaptation is already performed by every source forward and
-    is mathematically identical to source-only inference.
-    """
-
-    model.eval()
-    model.requires_grad_(False)
-    layers = [module for module in model.modules() if isinstance(module, nn.InstanceNorm3d)]
-    tracked_layers = [module for module in layers if module.track_running_stats]
-    return {
-        "instance_norm_layers": len(layers),
-        "tracked_stat_layers": len(tracked_layers),
-        "equivalent_to_source": len(tracked_layers) == 0,
-    }
 
 
 @dataclass(frozen=True)
@@ -67,7 +98,7 @@ class TentStepResult:
 
 
 class TentAdapter:
-    """One-step online Tent updates with optional episodic parameter resets."""
+    """Standard categorical TENT for the current BatchNorm source model."""
 
     def __init__(
         self,
@@ -76,37 +107,42 @@ class TentAdapter:
         learning_rate: float = 1e-3,
         steps: int = 1,
         use_amp: bool = True,
-        brain_mask: bool = False,
-        weight_decay: float = 0.0,
-        normalize_entropy: bool = False,
-        objective_reduction: DenseReduction | None = None,
+        bn_scope: TentBNScope = "all",
+        update_affine: bool = True,
+        use_batch_stats: bool = True,
+        allow_noop: bool = False,
     ) -> None:
         if learning_rate <= 0:
             raise ValueError("Tent learning rate must be positive")
         if steps <= 0:
             raise ValueError("Tent steps must be positive")
-        if weight_decay < 0:
-            raise ValueError("weight_decay must be nonnegative")
         self.model = model
-        self.parameters, self.parameter_names = configure_tent(model)
+        self.bn_scope = bn_scope
+        self.update_affine = bool(update_affine)
+        self.use_batch_stats = bool(use_batch_stats)
+        self.parameters, self.parameter_names = configure_tent(
+            model,
+            bn_scope=bn_scope,
+            update_affine=self.update_affine,
+            use_batch_stats=self.use_batch_stats,
+            allow_empty=allow_noop,
+        )
+        self.is_noop = not self.parameters
+        self.output_mode = getattr(model, "output_mode", None)
+        if self.output_mode != "classes_softmax":
+            raise ValueError("Tent requires the current four-class softmax source model")
         self.learning_rate = float(learning_rate)
         self.steps = int(steps)
         self.use_amp = bool(use_amp)
-        self.brain_mask = bool(brain_mask)
-        self.objective_reduction: DenseReduction = (
-            objective_reduction if objective_reduction is not None else "brain" if self.brain_mask else "all"
-        )
-        if self.objective_reduction not in {
-            "all",
-            "brain",
-            "foreground_background_balanced",
-        }:
-            raise ValueError(f"unknown Tent objective reduction: {self.objective_reduction}")
-        self.normalize_entropy = bool(normalize_entropy)
         self._source_parameters = [parameter.detach().clone() for parameter in self.parameters]
-        self.optimizer = torch.optim.Adam(self.parameters, lr=self.learning_rate, weight_decay=weight_decay)
+        self.optimizer = (
+            torch.optim.Adam(self.parameters, lr=self.learning_rate, weight_decay=0.0)
+            if self.parameters
+            else None
+        )
+        device_type = next(model.parameters()).device.type
         self.scaler = torch.amp.GradScaler(
-            "cuda", enabled=self.use_amp and self.parameters[0].device.type == "cuda"
+            "cuda", enabled=self.use_amp and device_type == "cuda" and bool(self.parameters)
         )
         self._source_scaler_state = self.scaler.state_dict().copy()
 
@@ -114,15 +150,25 @@ class TentAdapter:
     def reset(self) -> None:
         for parameter, source in zip(self.parameters, self._source_parameters):
             parameter.copy_(source)
-        self.optimizer.state.clear()
-        self.optimizer.zero_grad(set_to_none=True)
+        if self.optimizer is not None:
+            self.optimizer.state.clear()
+            self.optimizer.zero_grad(set_to_none=True)
         self.scaler.load_state_dict(self._source_scaler_state)
 
     @torch.enable_grad()
     def predict_and_adapt(self, images: torch.Tensor) -> TentStepResult:
+        if not self.parameters:
+            with torch.no_grad():
+                logits = self.model(images)
+                if isinstance(logits, (tuple, list)):
+                    logits = logits[0]
+                entropy = categorical_prediction_entropy(logits).mean()
+            return TentStepResult(logits=logits.detach().float(), entropy=float(entropy.item()))
+
         output_for_stitching: torch.Tensor | None = None
         entropy_value = 0.0
         for _ in range(self.steps):
+            assert self.optimizer is not None
             self.optimizer.zero_grad(set_to_none=True)
             amp_enabled = bool(self.use_amp and images.device.type == "cuda")
             with torch.autocast(
@@ -136,13 +182,8 @@ class TentAdapter:
             # As in Tent's multi-step loop, return the last forward's output.
             # With one step this is the prediction before that step's update.
             output_for_stitching = logits.detach().float()
-            loss = dense_entropy_loss(
-                logits,
-                images,
-                reduction=self.objective_reduction,
-                normalize=self.normalize_entropy,
-            )
-            # Averaging over 3 * 128**3 outputs produces tiny per-logit gradients.
+            loss = categorical_prediction_entropy(logits).mean()
+            # Averaging over a full 128-cubed patch produces tiny per-logit gradients.
             # Computing entropy in float32 alone does not prevent underflow when
             # those gradients flow back into the float16 network outputs.
             self.scaler.scale(loss).backward()

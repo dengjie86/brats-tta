@@ -17,16 +17,11 @@
 - 数据加载：训练 12 个 worker、验证 2 个 worker；训练预取 4 个 batch/worker、验证预取 1 个 batch/worker，保持 worker 常驻
 - CPU：16 核配额下每个 PyTorch 进程默认 1 个计算线程，避免 worker 和底层线程过度抢占
 - 源域增强：0.33 前景采样、LR 翻转、`0.8--1.2`/`±15°` 仿射、Gamma 和弱高斯噪声
-- 主配置关闭线性强度 scale/shift；其单变量消融配置为
-  `configs/source_brats_gli_4class_bn_scale_shift.yaml`
+- 线性强度 scale/shift 关闭
 
-不要把 BraTS PED 的五值标签直接交给这个四类 head，也不要改用旧的
-`configs/source_brats_gli.yaml`，否则模型定义和本次对照实验不一致。
+不要把 BraTS PED 的五值标签直接交给这个四类 head，否则模型定义和本次实验不一致。
 
-## 上传前检查
-
-当前开发仓库包含尚未提交的模型、损失、数据和 TTA 改动。AutoDL 上若只克隆远端
-`main`，不会得到这些本地改动。训练前应上传当前工作树，或先把确认后的改动提交并推送。
+## 环境检查
 
 在服务器上执行：
 
@@ -53,7 +48,7 @@ AutoDL 镜像通常已经带匹配驱动的 PyTorch。不要在未核对 CUDA �
 
 `DATA_ROOT` 可以指向包含病例目录的任意上级目录，manifest 扫描器会递归查找病例。
 训练输出默认写入
-`/root/autodl-tmp/brats2023_gli_4class_bn_31m_6stage_300_tegda_aug_fp32`，不写进仓库。
+`/root/autodl-tmp/brats2023_gli_4class_bn_31m_6stage_300_fp32`，不写进仓库。
 
 本配置在 AutoDL RTX 4080 SUPER 32 GiB 上完成过一次 `128³`、batch 2、严格 FP32 的完整
 前向、反向和 SGD step，PyTorch peak allocated 约为 7.95 GiB，peak reserved 约为
@@ -67,7 +62,7 @@ AutoDL 镜像通常已经带匹配驱动的 PyTorch。不要在未核对 CUDA �
 ```bash
 cd /path/to/brats-tta
 DATA_ROOT=/root/autodl-tmp/datasets/brats2023_gli \
-  WORK_ROOT=/root/autodl-tmp/brats2023_gli_4class_bn_31m_6stage_300_tegda_aug_fp32 \
+  WORK_ROOT=/root/autodl-tmp/brats2023_gli_4class_bn_31m_6stage_300_fp32 \
 NUM_GPUS=1 \
 bash scripts/autodl_train_source.sh
 ```
@@ -96,8 +91,8 @@ bash scripts/autodl_train_source.sh
 
 ```bash
 DATA_ROOT=/root/autodl-tmp/datasets/brats2023_gli \
-  WORK_ROOT=/root/autodl-tmp/brats2023_gli_4class_bn_31m_6stage_300_tegda_aug \
-  RESUME_CHECKPOINT=/root/autodl-tmp/brats2023_gli_4class_bn_31m_6stage_300_tegda_aug/run/checkpoints/latest.pt \
+  WORK_ROOT=/root/autodl-tmp/brats2023_gli_4class_bn_31m_6stage_300_fp32 \
+  RESUME_CHECKPOINT=/root/autodl-tmp/brats2023_gli_4class_bn_31m_6stage_300_fp32/run/checkpoints/latest.pt \
 EPOCHS=300 \
 bash scripts/autodl_train_source.sh
 ```

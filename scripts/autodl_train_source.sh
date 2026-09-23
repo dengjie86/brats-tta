@@ -40,7 +40,7 @@ if [[ ! -d "${DEFAULT_WORK_BASE}" ]]; then
   DEFAULT_WORK_BASE="${REPO_ROOT}/outputs"
 fi
 
-WORK_ROOT="${WORK_ROOT:-${DEFAULT_WORK_BASE}/brats2023_gli_4class_bn_31m_6stage_300_tegda_aug_fp32}"
+WORK_ROOT="${WORK_ROOT:-${DEFAULT_WORK_BASE}/brats2023_gli_4class_bn_31m_6stage_300_fp32}"
 CONFIG="${CONFIG:-${REPO_ROOT}/configs/source_brats_gli_4class_bn.yaml}"
 NUM_GPUS="${NUM_GPUS:-1}"
 BATCH_SIZE="${BATCH_SIZE:-2}"

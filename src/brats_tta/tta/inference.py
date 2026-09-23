@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Callable, Sequence
+from typing import Protocol
 
 import torch
 from torch import nn
@@ -11,12 +12,18 @@ from brats_tta.engine.inference import (
     _pad_for_sliding_window,
     _scan_starts,
 )
-from brats_tta.tta.tent import TentAdapter
+from brats_tta.tta.tent import TentStepResult
 
 
-def sliding_window_tent_logits(
+class PatchAdapter(Protocol):
+    steps: int
+
+    def predict_and_adapt(self, images: torch.Tensor) -> TentStepResult: ...
+
+
+def sliding_window_adapt_logits(
     model: nn.Module,
-    adapter: TentAdapter,
+    adapter: PatchAdapter,
     image: torch.Tensor,
     *,
     patch_size: Sequence[int],
@@ -25,7 +32,7 @@ def sliding_window_tent_logits(
     gaussian_weighting: bool = True,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[torch.Tensor, dict[str, float | int]]:
-    """Run online Tent, stitching the last forward from each patch's step loop."""
+    """Run an online patch adapter and stitch its patch predictions."""
 
     if image.ndim != 5 or image.shape[0] != 1:
         raise ValueError(f"expected one image [1, C, D, H, W], got {tuple(image.shape)}")
@@ -68,6 +75,14 @@ def sliding_window_tent_logits(
             progress_callback(batch_start // sw_batch_size + 1,
                               (len(locations) + sw_batch_size - 1) // sw_batch_size)
         batch_logits = result.logits
+        if batch_logits.ndim != 5 or tuple(batch_logits.shape[2:]) != patch_size:
+            raise RuntimeError(
+                f"adapter returned shape {tuple(batch_logits.shape)} for patch {patch_size}"
+            )
+        if batch_logits.shape[0] != len(batch_locations):
+            raise RuntimeError("adapter output batch size does not match sliding-window locations")
+        if not torch.isfinite(batch_logits).all():
+            raise RuntimeError("adapter returned non-finite logits")
         entropies.append(result.entropy)
         if output_accumulator is None:
             output_accumulator = torch.zeros(
@@ -103,3 +118,14 @@ def sliding_window_tent_logits(
         "adaptation_updates": len(entropies) * adapter.steps,
         "adaptation_entropy": float(sum(entropies) / len(entropies)),
     }
+
+
+def sliding_window_tent_logits(
+    model: nn.Module,
+    adapter: PatchAdapter,
+    image: torch.Tensor,
+    **kwargs: object,
+) -> tuple[torch.Tensor, dict[str, float | int]]:
+    """Backward-compatible alias for the generic sliding-window adapter."""
+
+    return sliding_window_adapt_logits(model, adapter, image, **kwargs)

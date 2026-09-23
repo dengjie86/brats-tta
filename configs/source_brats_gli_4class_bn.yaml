@@ -1,6 +1,6 @@
 experiment:
-  name: source_brats_gli_plain_unet3d_6stage_4class_bn_tegda_aug
-  output_dir: outputs/source_brats_gli_plain_unet3d_6stage_4class_bn_tegda_aug
+  name: source_brats_gli_plain_unet3d_6stage_4class_bn
+  output_dir: outputs/source_brats_gli_plain_unet3d_6stage_4class_bn
   seed: 2025
   deterministic: false
 
@@ -26,7 +26,7 @@ data:
     affine_degrees: 15.0
     gamma_probability: 0.5
     gamma_log_range: [-0.3, 0.3]
-    # Disabled in the TEGDA-aligned run; retained as explicit ablation knobs.
+    # Linear scale/shift are disabled in the fixed source training protocol.
     intensity_scale_probability: 0.0
     intensity_scale_range: [0.9, 1.1]
     intensity_shift_probability: 0.0
