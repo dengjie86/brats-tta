@@ -147,7 +147,7 @@ def build_dataloaders(
     training_config = config["training"]
     patch_size = tuple(data_config["patch_size"])
     label_schema = data_config.get("label_schema", "brats_modern")
-    output_mode = config["model"].get("output_mode", "regions_sigmoid")
+    output_mode = config["model"].get("output_mode", "classes_softmax")
     training_dataset = BraTSDataset(
         data_config["train_manifest"],
         training=True,

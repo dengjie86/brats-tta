@@ -295,7 +295,7 @@ def compute_region_metrics(
             ):
                 raise ValueError("region target must be [B,3,D,H,W] matching prediction spatial shape")
             # Target domains can use a different mutually-exclusive label schema
-            # (PED has an additional calcification class).  Comparing the
+            # (PED has an additional cystic component class). Comparing the
             # common ET/TC/WT regions avoids a lossy target-class remapping.
             target_regions = target.to(logits_or_probabilities.device, dtype=torch.float32)
         elif target.ndim == 4:

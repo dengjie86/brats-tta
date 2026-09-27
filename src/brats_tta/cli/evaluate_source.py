@@ -37,11 +37,12 @@ def main() -> None:
     config_override = load_config(args.config) if args.config else None
     model, config, _ = load_model_from_checkpoint(args.checkpoint, device, config_override)
     manifest = args.manifest or config["data"]["val_manifest"]
+    source_output_mode = config["model"].get("output_mode", "classes_softmax")
+    source_label_schema = config["data"].get("label_schema", "brats_modern")
     dataset = BraTSDataset(
         manifest,
         training=False,
-        label_schema=config["data"].get("label_schema", "brats_modern"),
-        output_mode=config["model"].get("output_mode", "regions_sigmoid"),
+        output_mode="regions_sigmoid",
     )
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
     inference = config["inference"]
@@ -65,8 +66,8 @@ def main() -> None:
                     logits,
                     target,
                     threshold=inference.get("threshold", 0.5),
-                    output_mode=config["model"].get("output_mode", "regions_sigmoid"),
-                    label_schema=config["data"].get("label_schema", "brats_modern"),
+                    output_mode=source_output_mode,
+                    label_schema=source_label_schema,
                 )
             )
     aggregate = aggregate_metric_dicts(results)

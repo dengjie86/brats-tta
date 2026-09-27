@@ -47,6 +47,33 @@ def test_canonical_source_config_is_valid() -> None:
     assert build_source_model(config["model"]).parameter_count() == 31_199_796
 
 
+def test_original_unet_configs_are_valid_and_select_the_requested_topology() -> None:
+    strict = load_config(PROJECT_ROOT / "configs" / "source_brats_gli_original_unet3d.yaml")
+    control = load_config(PROJECT_ROOT / "configs" / "source_brats_gli_original_unet3d_bn_control.yaml")
+
+    assert strict["model"]["name"] == "original_unet3d"
+    assert strict["model"]["norm"] == "none"
+    assert strict["model"]["deep_supervision"] is False
+    assert build_source_model(strict["model"]).parameter_count() == 22_578_020
+    assert control["model"]["norm"] == "batch3d"
+    assert build_source_model(control["model"]).parameter_count() == 22_580_964
+
+
+def test_cicek_unet3d_configs_are_valid_and_select_the_released_topology() -> None:
+    bn_config = load_config(PROJECT_ROOT / "configs" / "source_brats_gli_cicek_unet3d_bn.yaml")
+    no_bn_config = load_config(
+        PROJECT_ROOT / "configs" / "source_brats_gli_cicek_unet3d_no_bn.yaml"
+    )
+
+    assert bn_config["model"]["name"] == "cicek_unet3d"
+    assert bn_config["model"]["features"] == [64, 128, 256, 512]
+    assert bn_config["model"]["norm"] == "batch3d"
+    assert bn_config["model"]["track_running_stats"] is False
+    assert build_source_model(bn_config["model"]).parameter_count() == 19_075_044
+    assert no_bn_config["model"]["norm"] == "none"
+    assert build_source_model(no_bn_config["model"]).parameter_count() == 19_071_780
+
+
 @pytest.mark.parametrize(
     ("section", "key", "value", "message"),
     [

@@ -1,0 +1,87 @@
+experiment:
+  name: source_brats_gli_cicek_unet3d_bn_fp32
+  output_dir: outputs/source_brats_gli_cicek_unet3d_bn_fp32
+  seed: 2025
+  deterministic: false
+
+data:
+  train_manifest: data/manifests/gli_train_raw.json
+  val_manifest: data/manifests/gli_val_raw.json
+  label_schema: brats_modern
+  patch_size: [128, 128, 128]
+  num_workers: 12
+  validation_num_workers: 2
+  prefetch_factor: 4
+  validation_prefetch_factor: 1
+  persistent_workers: true
+  pin_memory: true
+  augmentation:
+    foreground_oversample: 0.33
+    flip_axes: [0]
+    flip_probability: 0.5
+    affine_probability: 0.5
+    affine_scale_range: [0.8, 1.2]
+    affine_degrees: 15.0
+    gamma_probability: 0.5
+    gamma_log_range: [-0.3, 0.3]
+    intensity_scale_probability: 0.0
+    intensity_scale_range: [0.9, 1.1]
+    intensity_shift_probability: 0.0
+    intensity_shift_range: [-0.1, 0.1]
+    noise_probability: 0.5
+    noise_std_range: [0.0, 0.05]
+
+model:
+  name: cicek_unet3d
+  in_channels: 4
+  out_channels: 4
+  output_mode: classes_softmax
+  # Four resolution levels from the released MICCAI 2016 3D U-Net.
+  # Each entry is the second-convolution output at that level.
+  features: [64, 128, 256, 512]
+  convs_per_stage: 2
+  deep_supervision: false
+  norm: batch3d
+  norm_eps: 1.0e-5
+  # The released Caffe model uses current-batch statistics at test time.
+  track_running_stats: false
+  norm_momentum: 0.001
+  sync_batchnorm: false
+  activation: relu
+  dropout: 0.0
+
+loss:
+  dice_weight: 1.0
+  ce_weight: 1.0
+  include_background: true
+  smooth: 1.0e-5
+  batch_dice: false
+
+training:
+  device: auto
+  batch_size: 2
+  epochs: 300
+  scheduler_epochs: 300
+  iterations_per_epoch: 250
+  validate_every: 20
+  save_every: 20
+  validation_cases: null
+  log_every: 1
+  validation_log_every: 1
+  optimizer: sgd
+  learning_rate: 0.01
+  momentum: 0.99
+  nesterov: true
+  weight_decay: 3.0e-5
+  poly_exponent: 0.9
+  gradient_clip_norm: 12.0
+  amp: false
+
+inference:
+  patch_size: [128, 128, 128]
+  overlap: 0.5
+  sw_batch_size: 1
+  gaussian_weighting: true
+  amp: false
+  threshold: 0.5
+  enforce_hierarchy: false

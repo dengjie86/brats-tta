@@ -42,7 +42,7 @@ def main() -> None:
         args.manifest,
         training=False,
         label_schema=config["data"].get("label_schema", "brats_modern"),
-        output_mode=config["model"].get("output_mode", "regions_sigmoid"),
+        output_mode=config["model"].get("output_mode", "classes_softmax"),
     )
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
     inference = config["inference"]
@@ -62,7 +62,7 @@ def main() -> None:
                 gaussian_weighting=inference.get("gaussian_weighting", True),
                 amp=inference.get("amp", True),
             )
-            output_mode = config["model"].get("output_mode", "regions_sigmoid")
+            output_mode = config["model"].get("output_mode", "classes_softmax")
             probabilities = (
                 torch.softmax(logits, dim=1)
                 if output_mode == "classes_softmax"

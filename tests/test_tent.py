@@ -7,6 +7,7 @@ import pytest
 import torch
 from torch import nn
 
+from brats_tta.models.original_unet3d import OriginalUNet3D
 from brats_tta.tta.tent import TentAdapter, categorical_prediction_entropy
 
 
@@ -101,6 +102,17 @@ def test_tent_rejects_the_removed_instance_norm_region_model() -> None:
         TentAdapter(LegacyInstanceNormModel(), use_amp=False)
 
 
+def test_tent_can_explicitly_report_strict_unet_as_noop() -> None:
+    model = OriginalUNet3D(features=(2, 4), norm="none")
+    adapter = TentAdapter(model, use_amp=False, allow_noop=True)
+
+    result = adapter.predict_and_adapt(torch.randn(1, 4, 8, 8, 8))
+
+    assert adapter.is_noop is True
+    assert adapter.parameters == []
+    assert result.logits.shape == (1, 4, 8, 8, 8)
+
+
 def test_multiple_steps_return_last_forward_and_reset_replays_episode() -> None:
     torch.manual_seed(9)
     model = TinyBatchNormSoftmaxModel()
@@ -138,6 +150,38 @@ def test_one_patch_online_output_is_before_update_not_final_model_prediction() -
         after_update = model(image)
     torch.testing.assert_close(online, source)
     assert not torch.allclose(online, after_update)
+
+
+def test_two_pass_uses_final_weights_after_identical_patch_updates() -> None:
+    from brats_tta.engine.inference import sliding_window_logits
+    from brats_tta.tta.inference import (
+        sliding_window_tent_logits,
+        sliding_window_tent_two_pass_logits,
+    )
+
+    torch.manual_seed(21)
+    image = torch.randn(1, 2, 4, 4, 8)
+    online_model = TinyBatchNormSoftmaxModel()
+    two_pass_model = deepcopy(online_model)
+    online_adapter = TentAdapter(online_model, learning_rate=1e-2, use_amp=False)
+    two_pass_adapter = TentAdapter(two_pass_model, learning_rate=1e-2, use_amp=False)
+    kwargs = {"patch_size": (4, 4, 4), "overlap": 0, "gaussian_weighting": False}
+
+    online, online_info = sliding_window_tent_logits(
+        online_model, online_adapter, image, **kwargs
+    )
+    two_pass, two_pass_info = sliding_window_tent_two_pass_logits(
+        two_pass_model, two_pass_adapter, image, amp=False, **kwargs
+    )
+    expected = sliding_window_logits(two_pass_model, image, amp=False, **kwargs)
+
+    assert online_info == two_pass_info
+    for online_parameter, two_pass_parameter in zip(
+        online_model.parameters(), two_pass_model.parameters()
+    ):
+        torch.testing.assert_close(online_parameter, two_pass_parameter)
+    torch.testing.assert_close(two_pass, expected)
+    assert not torch.allclose(two_pass, online)
 
 
 def test_five_updates_match_categorical_entropy_reference() -> None:
@@ -185,6 +229,23 @@ def test_reported_adaptation_updates_match_optimizer_steps() -> None:
     assert information["adaptation_patch_batches"] == 2
     assert information["adaptation_updates"] == actual_steps == 6
     assert progress_events == [(1, 2), (2, 2)]
+
+
+def test_statistics_only_reports_no_parameter_updates() -> None:
+    from brats_tta.tta.inference import sliding_window_tent_logits
+
+    model = TinyBatchNormSoftmaxModel()
+    adapter = TentAdapter(model, update_affine=False, use_amp=False)
+    _, information = sliding_window_tent_logits(
+        model,
+        adapter,
+        torch.randn(1, 2, 4, 4, 8),
+        patch_size=(4, 4, 4),
+        overlap=0,
+    )
+
+    assert information["adaptation_patch_batches"] == 2
+    assert information["adaptation_updates"] == 0
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA float16")

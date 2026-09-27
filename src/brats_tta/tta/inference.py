@@ -11,6 +11,7 @@ from brats_tta.engine.inference import (
     _gaussian_importance_map,
     _pad_for_sliding_window,
     _scan_starts,
+    sliding_window_logits,
 )
 from brats_tta.tta.tent import TentStepResult
 
@@ -115,7 +116,7 @@ def sliding_window_adapt_logits(
         raise RuntimeError(f"sliding-window crop returned {logits.shape[2:]}, expected {original_shape}")
     return logits, {
         "adaptation_patch_batches": len(entropies),
-        "adaptation_updates": len(entropies) * adapter.steps,
+        "adaptation_updates": 0 if getattr(adapter, "is_noop", False) else len(entropies) * adapter.steps,
         "adaptation_entropy": float(sum(entropies) / len(entropies)),
     }
 
@@ -129,3 +130,41 @@ def sliding_window_tent_logits(
     """Backward-compatible alias for the generic sliding-window adapter."""
 
     return sliding_window_adapt_logits(model, adapter, image, **kwargs)
+
+
+def sliding_window_tent_two_pass_logits(
+    model: nn.Module,
+    adapter: PatchAdapter,
+    image: torch.Tensor,
+    *,
+    patch_size: Sequence[int],
+    overlap: float = 0.5,
+    sw_batch_size: int = 1,
+    gaussian_weighting: bool = True,
+    amp: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> tuple[torch.Tensor, dict[str, float | int]]:
+    """Adapt over the case, then predict it with the final affine weights."""
+
+    # Reuse the online pass so both protocols perform the same patch updates.
+    adaptation_logits, adaptation = sliding_window_adapt_logits(
+        model,
+        adapter,
+        image,
+        patch_size=patch_size,
+        overlap=overlap,
+        sw_batch_size=sw_batch_size,
+        gaussian_weighting=gaussian_weighting,
+        progress_callback=progress_callback,
+    )
+    del adaptation_logits
+    logits = sliding_window_logits(
+        model,
+        image,
+        patch_size=patch_size,
+        overlap=overlap,
+        sw_batch_size=sw_batch_size,
+        gaussian_weighting=gaussian_weighting,
+        amp=amp,
+    )
+    return logits, adaptation

@@ -18,12 +18,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument(
+        "--split-unit",
+        choices=("patient", "case"),
+        default="patient",
+        help="Keep longitudinal scans from the same BraTS patient in one split",
+    )
+    parser.add_argument(
         "--allow-missing-label", action="store_true", help="For unlabeled inference manifests"
     )
     parser.add_argument(
         "--skip-incomplete",
         action="store_true",
         help="Skip incomplete case folders instead of changing or rejecting the source dataset",
+    )
+    parser.add_argument(
+        "--id-prefix",
+        help="Keep only cases whose IDs start with this prefix (useful for mixed flat archives)",
     )
     parser.add_argument(
         "--label-schema",
@@ -44,12 +54,25 @@ def main() -> None:
         require_label=not args.allow_missing_label,
         skip_incomplete=args.skip_incomplete,
     )
+    discovered_case_count = len(cases)
+    if args.id_prefix:
+        cases = [case for case in cases if str(case["id"]).startswith(args.id_prefix)]
+        if not cases:
+            raise SystemExit(f"--id-prefix matched no cases: {args.id_prefix!r}")
     training_cases, validation_cases = split_cases(
         cases,
         validation_fraction=args.val_fraction,
         seed=args.seed,
+        group_by_patient=args.split_unit == "patient",
     )
-    metadata = {"dataset_root": args.root, "split_seed": args.seed}
+    metadata = {
+        "dataset_root": args.root,
+        "split_seed": args.seed,
+        "split_unit": args.split_unit,
+        "discovered_case_count": discovered_case_count,
+    }
+    if args.id_prefix:
+        metadata["id_prefix"] = args.id_prefix
     if args.label_schema:
         metadata["label_schema"] = args.label_schema
     write_manifest(training_cases, args.train_output, metadata={**metadata, "split": "train"})

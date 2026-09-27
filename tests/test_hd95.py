@@ -26,7 +26,7 @@ def test_hd95_empty_mask_convention() -> None:
     assert hd95_binary(empty, nonempty, spacing=(1.0, 1.0, 1.0)) == 374.0
 
 
-def test_hd95_matches_area_weighted_implementation() -> None:
+def test_hd95_matches_official_area_weighted_implementation() -> None:
     prediction = np.zeros((7, 8, 9), dtype=bool)
     target = np.zeros_like(prediction)
     prediction[1:5, 2:7, 2:6] = True

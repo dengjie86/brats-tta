@@ -1,0 +1,11 @@
+{
+  "title": "BraTS TTA source Cicek 3D U-Net",
+  "id": "nagisa0v0/brats-tta-source-cicek-20260923",
+  "subtitle": "Current working-tree source and Cicek 3D U-Net training configuration",
+  "description": "Private dependency dataset containing the current brats_tta source tree and the Cicek 2016 3D U-Net source configuration.",
+  "licenses": [
+    {
+      "name": "other"
+    }
+  ]
+}

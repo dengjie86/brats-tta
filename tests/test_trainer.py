@@ -42,6 +42,7 @@ def _config(output_directory: Path) -> dict[str, Any]:
         "model": {
             "in_channels": 4,
             "out_channels": 3,
+            "output_mode": "regions_sigmoid",
             "features": [2, 4, 8],
             "deep_supervision": True,
         },
@@ -70,7 +71,14 @@ def _config(output_directory: Path) -> dict[str, Any]:
 
 
 def _build_trainer(output_directory: Path) -> SourceTrainer:
-    model = PlainUNet3D(features=(2, 4, 8), deep_supervision=True)
+    model = PlainUNet3D(
+        out_channels=3,
+        features=(2, 4, 8),
+        output_mode="regions_sigmoid",
+        deep_supervision=True,
+        norm="instance3d",
+        track_running_stats=False,
+    )
     loss = build_loss({"deep_supervision_weights": [1.0, 0.0]}, number_of_outputs=2)
     loader = DataLoader(SingleCaseDataset(), batch_size=1)
     return SourceTrainer(

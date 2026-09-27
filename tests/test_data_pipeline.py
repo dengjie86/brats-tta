@@ -10,7 +10,13 @@ import torch
 from torch.utils.data import DataLoader
 
 from brats_tta.data.brats import BraTSDataset, DistributedEvalSampler
-from brats_tta.data.manifest import discover_brats_cases, load_manifest, split_cases, write_manifest
+from brats_tta.data.manifest import (
+    brats_patient_id,
+    discover_brats_cases,
+    load_manifest,
+    split_cases,
+    write_manifest,
+)
 from brats_tta.data.preprocessing import preprocess_manifest
 from brats_tta.data.transforms import SourcePatchTransform
 
@@ -108,6 +114,86 @@ def test_manifest_preprocess_and_dataset(tmp_path: Path) -> None:
     assert sample["target"].shape == (3, 12, 12, 12)
     assert torch.all(sample["target"][0] <= sample["target"][1])
     assert torch.all(sample["target"][1] <= sample["target"][2])
+
+
+def test_manifest_discovers_flat_case_layout(tmp_path: Path) -> None:
+    raw_root = tmp_path / "flat"
+    raw_root.mkdir()
+    for case_id in ("BraTS-GLI-00001-000", "BraTS-GLI-00002-000"):
+        _write_case(raw_root, case_id)
+        case_directory = raw_root / case_id
+        for file_path in case_directory.iterdir():
+            file_path.rename(raw_root / file_path.name)
+        case_directory.rmdir()
+
+    cases = discover_brats_cases(raw_root)
+
+    assert [case["id"] for case in cases] == [
+        "BraTS-GLI-00001-000",
+        "BraTS-GLI-00002-000",
+    ]
+    assert Path(cases[0]["images"]["t1n"]).parent == raw_root.resolve()
+
+
+def test_prepare_manifest_parser_supports_id_prefix() -> None:
+    from brats_tta.cli.prepare_manifest import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--root",
+            "data",
+            "--train-output",
+            "train.json",
+            "--val-output",
+            "val.json",
+            "--id-prefix",
+            "BraTS-GLI-",
+        ]
+    )
+
+    assert args.id_prefix == "BraTS-GLI-"
+
+
+def test_split_cases_keeps_longitudinal_brats_patient_in_one_split() -> None:
+    cases = [
+        {"id": "BraTS-GLI-00001-000"},
+        {"id": "BraTS-GLI-00001-001"},
+        {"id": "BraTS-GLI-00002-000"},
+        {"id": "BraTS-GLI-00003-000"},
+        {"id": "BraTS-GLI-00004-000"},
+    ]
+
+    training, validation = split_cases(cases, validation_fraction=0.5, seed=17)
+
+    training_patients = {brats_patient_id(case["id"]) for case in training}
+    validation_patients = {brats_patient_id(case["id"]) for case in validation}
+    assert training_patients.isdisjoint(validation_patients)
+    assert {case["id"] for case in training + validation} == {case["id"] for case in cases}
+
+
+def test_case_level_split_remains_available_for_non_longitudinal_protocols() -> None:
+    cases = [
+        {"id": "BraTS-GLI-00001-000"},
+        {"id": "BraTS-GLI-00001-001"},
+    ]
+
+    training, validation = split_cases(
+        cases,
+        validation_fraction=0.5,
+        seed=17,
+        group_by_patient=False,
+    )
+
+    assert len(training) == len(validation) == 1
+
+
+def test_zero_validation_fraction_preserves_evaluation_order() -> None:
+    cases = [{"id": "Target-003"}, {"id": "Target-001"}, {"id": "Target-002"}]
+
+    training, validation = split_cases(cases, validation_fraction=0.0, seed=17)
+
+    assert training == cases
+    assert validation == []
 
 
 def test_unlabeled_target_case_can_be_collated(tmp_path: Path) -> None:

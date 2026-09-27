@@ -40,7 +40,7 @@ if [[ ! -d "${DEFAULT_WORK_BASE}" ]]; then
   DEFAULT_WORK_BASE="${REPO_ROOT}/outputs"
 fi
 
-WORK_ROOT="${WORK_ROOT:-${DEFAULT_WORK_BASE}/brats2023_gli_4class_bn_31m_6stage_300_fp32}"
+WORK_ROOT="${WORK_ROOT:-${DEFAULT_WORK_BASE}/brats2023_gli_4class_bn_31m_6stage_300_fp32_patient_split}"
 CONFIG="${CONFIG:-${REPO_ROOT}/configs/source_brats_gli_4class_bn.yaml}"
 NUM_GPUS="${NUM_GPUS:-1}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
@@ -52,7 +52,7 @@ VALIDATION_PREFETCH_FACTOR="${VALIDATION_PREFETCH_FACTOR:-1}"
 VALIDATION_NUM_WORKERS="${VALIDATION_NUM_WORKERS:-2}"
 VALIDATE_EVERY="${VALIDATE_EVERY:-25}"
 SAVE_EVERY="${SAVE_EVERY:-20}"
-VALIDATION_CASES="${VALIDATION_CASES:-64}"
+VALIDATION_CASES="${VALIDATION_CASES:-all}"
 VAL_FRACTION="${VAL_FRACTION:-0.2}"
 SEED="${SEED:-2025}"
 RESUME_CHECKPOINT="${RESUME_CHECKPOINT:-}"
@@ -92,6 +92,7 @@ if [[ ! -s "${TRAIN_MANIFEST}" || ! -s "${VAL_MANIFEST}" ]]; then
     --val-output "${VAL_MANIFEST}" \
     --val-fraction "${VAL_FRACTION}" \
     --seed "${SEED}" \
+    --split-unit patient \
     --label-schema brats_modern
 fi
 
@@ -157,6 +158,8 @@ ENVIRONMENT_LOG="${WORK_ROOT}/launch_environment.txt"
   echo "prefetch_factor=${PREFETCH_FACTOR}"
   echo "validation_prefetch_factor=${VALIDATION_PREFETCH_FACTOR}"
   echo "validation_num_workers=${VALIDATION_NUM_WORKERS}"
+  echo "validation_cases=${VALIDATION_CASES}"
+  echo "split_unit=patient"
   echo "memory_limit_expected_gib=80"
   printf 'launch_command='
   printf ' %q' "${TRAIN_COMMAND[@]}"

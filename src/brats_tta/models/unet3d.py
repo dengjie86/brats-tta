@@ -169,17 +169,17 @@ class DecoderStage(nn.Module):
 
 
 class PlainUNet3D(nn.Module):
-    """Five-stage nnU-Net-style 3D U-Net for BraTS segmentation.
+    """Six-stage nnU-Net-style 3D U-Net for BraTS segmentation.
 
     The default architecture is the source model agreed for this project:
 
     - input: four MRI modalities
-    - encoder features: 32, 64, 128, 256, 320
+    - encoder features: 32, 64, 128, 256, 320, 320
     - two 3x3x3 convolutions per encoder and decoder stage
     - stride-2 convolutional downsampling
-    - configurable InstanceNorm3d or BatchNorm3d
+    - BatchNorm3d with affine scale and shift
     - LeakyReLU(negative_slope=0.01)
-    - output logits: either ET/TC/WT regions or four mutually-exclusive classes
+    - four mutually-exclusive class logits: background, NCR/NET, edema and ET
 
     When deep supervision is enabled, outputs are ordered from highest to lowest
     resolution. No sigmoid is applied inside the model.
@@ -188,16 +188,16 @@ class PlainUNet3D(nn.Module):
     def __init__(
         self,
         in_channels: int = 4,
-        out_channels: int = 3,
-        features: Sequence[int] = (32, 64, 128, 256, 320),
+        out_channels: int = 4,
+        features: Sequence[int] = (32, 64, 128, 256, 320, 320),
         *,
         output_mode: OutputMode | None = None,
         convs_per_stage: int = 2,
         deep_supervision: bool = True,
         norm_eps: float = 1e-5,
-        norm: NormKind = "instance3d",
+        norm: NormKind = "batch3d",
         norm_affine: bool = True,
-        track_running_stats: bool = False,
+        track_running_stats: bool = True,
         norm_momentum: float = 0.1,
         negative_slope: float = 1e-2,
     ) -> None:
@@ -295,12 +295,21 @@ class PlainUNet3D(nn.Module):
                 f"spatial dimensions {tuple(x.shape[2:])} must be divisible by {self.required_divisibility}"
             )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor | list[torch.Tensor]:
+    def encode_features(self, x: torch.Tensor) -> list[torch.Tensor]:
+        """Return encoder features from highest to lowest spatial resolution."""
+
         self._check_input(x)
         skips: list[torch.Tensor] = []
         for stage in self.encoder:
             x = stage(x)
             skips.append(x)
+        return skips
+
+    def decode_features(self, skips: Sequence[torch.Tensor]) -> torch.Tensor | list[torch.Tensor]:
+        """Decode a feature pyramid returned by :meth:`encode_features`."""
+
+        if len(skips) != len(self.encoder):
+            raise ValueError(f"expected {len(self.encoder)} encoder features, got {len(skips)}")
 
         decoder_logits: list[torch.Tensor] = []
         x = skips[-1]
@@ -314,6 +323,9 @@ class PlainUNet3D(nn.Module):
             return decoder_logits
         return decoder_logits[0]
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor | list[torch.Tensor]:
+        return self.decode_features(self.encode_features(x))
+
     def parameter_count(self, trainable_only: bool = False) -> int:
         parameters = self.parameters()
         if trainable_only:
@@ -321,22 +333,32 @@ class PlainUNet3D(nn.Module):
         return sum(parameter.numel() for parameter in parameters)
 
 
-def build_source_model(model_config: dict) -> PlainUNet3D:
+def build_source_model(model_config: dict) -> nn.Module:
     """Build the source network from the validated YAML model section."""
+
+    model_name = model_config.get("name", "plain_unet3d")
+    if model_name == "cicek_unet3d":
+        from brats_tta.models.cicek_unet3d import build_cicek_unet3d
+
+        return build_cicek_unet3d(model_config)
+    if model_name == "original_unet3d":
+        from brats_tta.models.original_unet3d import build_original_unet3d
+
+        return build_original_unet3d(model_config)
 
     return PlainUNet3D(
         in_channels=model_config.get("in_channels", 4),
-        out_channels=model_config.get("out_channels", 3),
-        features=model_config.get("features", [32, 64, 128, 256, 320]),
+        out_channels=model_config.get("out_channels", 4),
+        features=model_config.get("features", [32, 64, 128, 256, 320, 320]),
         output_mode=model_config.get("output_mode"),
         convs_per_stage=model_config.get("convs_per_stage", 2),
         deep_supervision=model_config.get("deep_supervision", True),
         norm_eps=model_config.get("norm_eps", 1e-5),
-        norm=model_config.get("norm", "instance3d"),
+        norm=model_config.get("norm", "batch3d"),
         norm_affine=model_config.get("norm_affine", True),
         track_running_stats=model_config.get(
             "track_running_stats",
-            model_config.get("norm", "instance3d") == "batch3d",
+            model_config.get("norm", "batch3d") == "batch3d",
         ),
         norm_momentum=model_config.get("norm_momentum", 0.1),
         negative_slope=model_config.get("negative_slope", 1e-2),

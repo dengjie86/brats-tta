@@ -18,7 +18,10 @@ from brats_tta.cli.common import configure_logging, load_model_from_checkpoint
 from brats_tta.data.brats import BraTSDataset
 from brats_tta.engine.inference import sliding_window_logits
 from brats_tta.metrics.segmentation import compute_region_metrics
-from brats_tta.tta.inference import sliding_window_tent_logits
+from brats_tta.tta.inference import (
+    sliding_window_tent_logits,
+    sliding_window_tent_two_pass_logits,
+)
 from brats_tta.tta.tent import TentAdapter
 from brats_tta.utils.atomic_io import atomic_write_text
 from brats_tta.utils.checkpoint import load_checkpoint
@@ -57,6 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--tent-lr", type=float, default=1e-3)
     parser.add_argument("--tent-steps", type=int, default=1)
+    parser.add_argument(
+        "--tent-inference-mode",
+        choices=("online", "two_pass"),
+        default="online",
+        help="Use online patch outputs or infer the whole case after adaptation",
+    )
     parser.add_argument(
         "--tent-bn-scope",
         choices=("all", "encoder", "decoder", "shallow", "deep"),
@@ -116,7 +125,7 @@ def main() -> None:
     source_label_schema = checkpoint_config["data"].get("label_schema", "brats_modern")
     del checkpoint
     # Always load target labels as common ET/TC/WT regions.  This supports PED's
-    # additional calcification class without pretending it is a source GLI class.
+    # additional cystic component class without treating it as a source GLI class.
     dataset = BraTSDataset(args.manifest, training=False, output_mode="regions_sigmoid")
     case_count = min(len(dataset), args.limit) if args.limit else len(dataset)
     if case_count <= 0:
@@ -204,6 +213,7 @@ def _evaluate_method(
             {
                 "optimizer": "Adam",
                 "implementation": "batchnorm_affine_categorical_entropy_v1",
+                "inference_mode": args.tent_inference_mode,
                 "gradient_scaling": adapter.scaler.is_enabled(),
                 "output_mode": adapter.output_mode,
                 "learning_rate": args.tent_lr,
@@ -329,7 +339,12 @@ def _evaluate_method(
                 if done == 1 or done % 6 == 0 or done == total:
                     LOGGER.info("tent %s: patch batches %d/%d", case_id, done, total)
 
-            logits, adaptation = sliding_window_tent_logits(
+            tent_inference = (
+                sliding_window_tent_two_pass_logits
+                if args.tent_inference_mode == "two_pass"
+                else sliding_window_tent_logits
+            )
+            logits, adaptation = tent_inference(
                 model,
                 adapter,
                 image,
@@ -338,6 +353,7 @@ def _evaluate_method(
                 sw_batch_size=sw_batch_size,
                 gaussian_weighting=inference.get("gaussian_weighting", True),
                 progress_callback=patch_progress,
+                **({"amp": amp} if args.tent_inference_mode == "two_pass" else {}),
             )
         _synchronize(device)
         elapsed = time.perf_counter() - case_start

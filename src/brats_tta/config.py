@@ -64,38 +64,64 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError(f"missing configuration sections: {', '.join(missing)}")
 
     model = config["model"]
-    if model.get("name", "plain_unet3d") != "plain_unet3d":
-        raise ValueError("only the plain_unet3d source architecture is implemented")
+    model_name = model.get("name", "plain_unet3d")
+    if model_name not in {"plain_unet3d", "original_unet3d", "cicek_unet3d"}:
+        raise ValueError(
+            "supported source architectures are plain_unet3d, original_unet3d "
+            "and cicek_unet3d"
+        )
     if model.get("in_channels", 4) != 4:
         raise ValueError("the fixed BraTS source baseline requires four input modalities")
-    output_mode = model.get("output_mode")
-    if output_mode is None:
-        output_mode = "regions_sigmoid" if model.get("out_channels", 3) == 3 else "classes_softmax"
+    output_mode = model.get("output_mode", "classes_softmax")
     if output_mode not in {"regions_sigmoid", "classes_softmax"}:
         raise ValueError("model.output_mode must be regions_sigmoid or classes_softmax")
     expected_channels = 3 if output_mode == "regions_sigmoid" else 4
-    if model.get("out_channels", expected_channels) != expected_channels:
+    if model.get("out_channels", 4) != expected_channels:
         raise ValueError(f"{output_mode} requires out_channels={expected_channels}")
     features = model.get("features", [])
     if not isinstance(features, list) or len(features) < 2:
         raise ValueError("model.features must define at least two stages")
     if any(not isinstance(channel, int) or isinstance(channel, bool) or channel <= 0 for channel in features):
         raise ValueError("model.features must contain positive integers")
-    if int(model.get("convs_per_stage", 2)) < 1:
-        raise ValueError("model.convs_per_stage must be positive")
-    norm = model.get("norm", "instance3d")
-    if norm not in {"instance3d", "batch3d"}:
-        raise ValueError("model.norm must be instance3d or batch3d")
-    if not bool(model.get("norm_affine", True)):
-        raise ValueError("source normalization requires affine=True")
-    if norm == "instance3d" and bool(model.get("track_running_stats", False)):
-        raise ValueError("InstanceNorm3d source baseline requires track_running_stats=False")
-    if norm == "batch3d" and float(model.get("norm_momentum", 0.1)) <= 0:
-        raise ValueError("BatchNorm3d norm_momentum must be positive")
-    if model.get("activation", "leaky_relu") != "leaky_relu":
-        raise ValueError("PlainUNet3D currently implements LeakyReLU only")
-    if float(model.get("dropout", 0.0)) != 0.0:
-        raise ValueError("the fixed source baseline does not use dropout")
+    if model_name in {"original_unet3d", "cicek_unet3d"}:
+        if int(model.get("convs_per_stage", 2)) != 2:
+            raise ValueError(f"{model_name} requires exactly two convolutions per block")
+        if bool(model.get("deep_supervision", False)):
+            raise ValueError(f"{model_name} does not implement deep supervision")
+        norm = model.get("norm", "batch3d" if model_name == "cicek_unet3d" else "none")
+        if norm not in {"none", "batch3d"}:
+            raise ValueError(f"{model_name}.model.norm must be none or batch3d")
+        if norm == "batch3d" and float(model.get("norm_momentum", 0.1)) <= 0:
+            raise ValueError("BatchNorm3d norm_momentum must be positive")
+        if model.get("activation", "relu") != "relu":
+            raise ValueError(f"{model_name} uses ReLU only")
+        if float(model.get("dropout", 0.0)) != 0.0:
+            raise ValueError(f"{model_name} does not use dropout")
+        if bool(model.get("sync_batchnorm", False)) and norm != "batch3d":
+            raise ValueError("sync_batchnorm requires model.norm=batch3d")
+        if model_name == "cicek_unet3d":
+            if len(features) != 4:
+                raise ValueError("cicek_unet3d requires four resolution levels")
+            if any(channel % 2 for channel in features):
+                raise ValueError("cicek_unet3d feature counts must be even")
+            if any(right != 2 * left for left, right in zip(features, features[1:])):
+                raise ValueError("cicek_unet3d feature counts must double at each level")
+    else:
+        if int(model.get("convs_per_stage", 2)) < 1:
+            raise ValueError("model.convs_per_stage must be positive")
+        norm = model.get("norm", "batch3d")
+        if norm not in {"instance3d", "batch3d"}:
+            raise ValueError("model.norm must be instance3d or batch3d")
+        if not bool(model.get("norm_affine", True)):
+            raise ValueError("source normalization requires affine=True")
+        if norm == "instance3d" and bool(model.get("track_running_stats", False)):
+            raise ValueError("InstanceNorm3d source baseline requires track_running_stats=False")
+        if norm == "batch3d" and float(model.get("norm_momentum", 0.1)) <= 0:
+            raise ValueError("BatchNorm3d norm_momentum must be positive")
+        if model.get("activation", "leaky_relu") != "leaky_relu":
+            raise ValueError("PlainUNet3D currently implements LeakyReLU only")
+        if float(model.get("dropout", 0.0)) != 0.0:
+            raise ValueError("the fixed source baseline does not use dropout")
 
     patch_size = config["data"].get("patch_size")
     if not isinstance(patch_size, list) or len(patch_size) != 3:

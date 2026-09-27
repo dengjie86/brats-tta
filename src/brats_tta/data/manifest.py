@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ DEFAULT_SUFFIXES: dict[str, tuple[str, ...]] = {
         "_seg_new.nii",
     ),
 }
+
+_BRATS_LONGITUDINAL_CASE_ID = re.compile(r"^(?P<patient>.+-\d{5})-\d{3}$")
 
 
 def discover_brats_cases(
@@ -81,6 +84,20 @@ def discover_brats_cases(
     }
     case_directories = sorted(complete_directories - complete_ancestors)
 
+    # Some public BraTS mirrors flatten every case into one directory instead
+    # of creating a folder per case. In that layout the ancestor scan above
+    # sees the dataset root as one giant incomplete case. Group direct files
+    # by the case-id prefix before reporting that false positive.
+    if not case_directories:
+        flat_cases = _discover_flat_cases(
+            root,
+            suffixes=suffixes,
+            require_label=require_label,
+            skip_incomplete=skip_incomplete,
+        )
+        if flat_cases:
+            return flat_cases
+
     # Report incomplete leaf case groups, while ignoring aggregate dataset roots.
     meaningful_ancestors = {
         ancestor
@@ -120,29 +137,112 @@ def discover_brats_cases(
     return cases
 
 
+def _discover_flat_cases(
+    root: Path,
+    *,
+    suffixes: dict[str, tuple[str, ...]],
+    require_label: bool,
+    skip_incomplete: bool,
+) -> list[dict[str, Any]]:
+    """Discover cases whose five NIfTI files are direct children of ``root``."""
+
+    keys = (*MODALITY_ORDER, "label")
+    grouped: dict[str, dict[str, list[Path]]] = {}
+    for file_path in root.iterdir():
+        if not file_path.is_file():
+            continue
+        key = _match_file_key(file_path, suffixes)
+        if key is None:
+            continue
+        case_id = _case_id_from_filename(file_path.name, key, suffixes)
+        grouped.setdefault(case_id, {candidate_key: [] for candidate_key in keys})[key].append(
+            file_path
+        )
+
+    if not grouped:
+        return []
+
+    cases: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for case_id in sorted(grouped):
+        matches = grouped[case_id]
+        modalities_complete = all(len(matches[modality]) == 1 for modality in MODALITY_ORDER)
+        label_count = len(matches["label"])
+        label_is_valid = label_count == 1 if require_label else label_count <= 1
+        if not modalities_complete or not label_is_valid:
+            errors.append(_format_incomplete_case(root / case_id, matches, require_label))
+            continue
+
+        record: dict[str, Any] = {
+            "id": case_id,
+            "images": {
+                modality: str(matches[modality][0].resolve()) for modality in MODALITY_ORDER
+            },
+        }
+        if matches["label"]:
+            record["label"] = str(matches["label"][0].resolve())
+        cases.append(record)
+
+    if errors and not skip_incomplete:
+        preview = "\n".join(errors[:20])
+        remainder = "" if len(errors) <= 20 else f"\n... and {len(errors) - 20} more"
+        raise ValueError(f"incomplete BraTS cases were found:\n{preview}{remainder}")
+    return cases
+
+
 def split_cases(
     cases: list[dict[str, Any]],
     *,
     validation_fraction: float,
     seed: int,
+    group_by_patient: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if not cases:
         raise ValueError("cannot split an empty case list")
     if not 0 <= validation_fraction < 1:
         raise ValueError("validation_fraction must be in [0, 1)")
-    if validation_fraction > 0 and len(cases) < 2:
-        raise ValueError("at least two cases are required for a non-empty train/validation split")
-    shuffled = list(cases)
-    random.Random(seed).shuffle(shuffled)
-    validation_count = int(round(len(shuffled) * validation_fraction))
+    if validation_fraction == 0:
+        return list(cases), []
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for case in cases:
+        case_id = str(case["id"])
+        group_id = brats_patient_id(case_id) if group_by_patient else case_id
+        groups.setdefault(group_id, []).append(case)
+    if validation_fraction > 0 and len(groups) < 2:
+        unit = "patient groups" if group_by_patient else "cases"
+        raise ValueError(f"at least two {unit} are required for a non-empty train/validation split")
+
+    shuffled_group_ids = list(groups)
+    random.Random(seed).shuffle(shuffled_group_ids)
+    validation_count = int(round(len(shuffled_group_ids) * validation_fraction))
     if validation_fraction > 0 and validation_count == 0:
         validation_count = 1
     if validation_fraction > 0:
-        validation_count = min(validation_count, len(shuffled) - 1)
-    validation_ids = {case["id"] for case in shuffled[:validation_count]}
-    training = [case for case in cases if case["id"] not in validation_ids]
-    validation = [case for case in cases if case["id"] in validation_ids]
+        validation_count = min(validation_count, len(shuffled_group_ids) - 1)
+    validation_group_ids = set(shuffled_group_ids[:validation_count])
+
+    # Preserve the deterministic shuffled group order. This keeps a deliberately
+    # capped validation prefix representative instead of reverting to sorted IDs.
+    training = [
+        case
+        for group_id in shuffled_group_ids
+        if group_id not in validation_group_ids
+        for case in groups[group_id]
+    ]
+    validation = [
+        case
+        for group_id in shuffled_group_ids
+        if group_id in validation_group_ids
+        for case in groups[group_id]
+    ]
     return training, validation
+
+
+def brats_patient_id(case_id: str) -> str:
+    """Return the patient portion of modern longitudinal BraTS case IDs."""
+
+    match = _BRATS_LONGITUDINAL_CASE_ID.fullmatch(case_id)
+    return match.group("patient") if match else case_id
 
 
 def write_manifest(
@@ -188,6 +288,22 @@ def _match_file_key(file_path: Path, suffixes: dict[str, tuple[str, ...]]) -> st
     if len(matching_keys) > 1:
         raise ValueError(f"ambiguous BraTS filename {file_path}: matches {matching_keys}")
     return matching_keys[0] if matching_keys else None
+
+
+def _case_id_from_filename(
+    filename: str,
+    key: str,
+    suffixes: dict[str, tuple[str, ...]],
+) -> str:
+    """Remove the longest matching modality suffix from a flat filename."""
+
+    filename_lower = filename.lower()
+    for suffix in sorted(suffixes[key], key=len, reverse=True):
+        if filename_lower.endswith(suffix.lower()):
+            case_id = filename[: len(filename) - len(suffix)]
+            if case_id:
+                return case_id
+    raise ValueError(f"could not derive a case id from {filename}")
 
 
 def _format_incomplete_case(

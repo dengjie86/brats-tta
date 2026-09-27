@@ -161,7 +161,7 @@ def main() -> None:
         loss_function = build_loss(
             config["loss"],
             number_of_outputs,
-            output_mode=config["model"].get("output_mode", "regions_sigmoid"),
+            output_mode=config["model"].get("output_mode", "classes_softmax"),
         )
         training_loader, validation_loader = build_dataloaders(config, context)
         per_device_batch = int(config["training"]["batch_size"])

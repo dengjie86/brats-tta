@@ -76,6 +76,7 @@ def _distributed_config(tmp_path: Path) -> tuple[Path, Path]:
             "name": "plain_unet3d",
             "in_channels": 4,
             "out_channels": 3,
+            "output_mode": "regions_sigmoid",
             "features": [2, 4, 8],
             "convs_per_stage": 2,
             "deep_supervision": True,
@@ -175,7 +176,13 @@ def test_two_process_ddp_train_validate_and_checkpoint(tmp_path: Path) -> None:
     assert (output_directory / "checkpoints" / "last.pt").exists()
     assert checkpoint["distributed_world_size"] == 2
     assert not any(key.startswith("module.") for key in checkpoint["model"])
-    PlainUNet3D(features=(2, 4, 8)).load_state_dict(checkpoint["model"], strict=True)
+    PlainUNet3D(
+        out_channels=3,
+        features=(2, 4, 8),
+        output_mode="regions_sigmoid",
+        norm="instance3d",
+        track_running_stats=False,
+    ).load_state_dict(checkpoint["model"], strict=True)
     history_lines = (output_directory / "history.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(history_lines) == 1
     history_record = json.loads(history_lines[0])

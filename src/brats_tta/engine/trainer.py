@@ -94,7 +94,7 @@ class SourceTrainer:
         self.device = device
         self.training_config = config["training"]
         self.inference_config = config["inference"]
-        self.output_mode = config["model"].get("output_mode", "regions_sigmoid")
+        self.output_mode = config["model"].get("output_mode", "classes_softmax")
         self.label_schema = config["data"].get("label_schema", "brats_modern")
 
         self.output_directory = Path(config["experiment"]["output_dir"]).expanduser().resolve()
@@ -410,7 +410,9 @@ def build_optimizer(model: nn.Module, training_config: dict[str, Any]) -> Optimi
 
 
 def build_scheduler(optimizer: Optimizer, training_config: dict[str, Any]) -> LambdaLR:
-    number_of_epochs = int(training_config.get("epochs", 1000))
+    number_of_epochs = int(
+        training_config.get("scheduler_epochs", training_config.get("epochs", 1000))
+    )
     exponent = float(training_config.get("poly_exponent", 0.9))
 
     def polynomial_decay(epoch: int) -> float:
