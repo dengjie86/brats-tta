@@ -1,0 +1,95 @@
+{
+  "date": "2026-10-10",
+  "sources": [
+    {
+      "source": "outputs/ped2023_context_probe_20261008/common.py",
+      "sha256": "5ea3662225a09a2100b0bb3c58a6fc3f4d5941bd4b5e2a171ed6719481aa731e",
+      "symbols": [
+        "teacher",
+        "make_contexts"
+      ]
+    },
+    {
+      "source": "outputs/ped2023_context_probe_20261008/common.py",
+      "sha256": "5ea3662225a09a2100b0bb3c58a6fc3f4d5941bd4b5e2a171ed6719481aa731e",
+      "symbols": [
+        "crop",
+        "restore"
+      ]
+    },
+    {
+      "source": "outputs/ped2023_in_affine_anchor_20261008/common.py",
+      "sha256": "fb5a4031e0ee583e3bd757f060c8cc86512b6bcda5fa9b4f6daae22d6de157d7",
+      "symbols": [
+        "crop_patch"
+      ]
+    },
+    {
+      "source": "artifacts/experiments/BraTS_PED2023_snapshot_probe_20261006/common.py",
+      "sha256": "e233e1a08a2df5339466f930e7da660869720c34104abbf7dfb732ce5009fc7d",
+      "symbols": [
+        "matched"
+      ]
+    },
+    {
+      "source": "outputs/ped2023_context_probe_20261008/common.py",
+      "sha256": "5ea3662225a09a2100b0bb3c58a6fc3f4d5941bd4b5e2a171ed6719481aa731e",
+      "symbols": [
+        "matched"
+      ]
+    },
+    {
+      "source": "outputs/ped2023_in_context_decomposition_20261008/common.py",
+      "sha256": "72ca8f65011b003fa91f5a70cb45a147a314de607dfd892a2936fffebbc003bd",
+      "symbols": [
+        "geometry"
+      ]
+    },
+    {
+      "source": "outputs/ped2023_in_affine_anchor_20261008/common.py",
+      "sha256": "fb5a4031e0ee583e3bd757f060c8cc86512b6bcda5fa9b4f6daae22d6de157d7",
+      "symbols": [
+        "delta_logits",
+        "select_affine",
+        "centered"
+      ]
+    },
+    {
+      "source": "outputs/ped2023_hierarchical_anchor_20261008/common.py",
+      "sha256": "0968d6070f2eca89b3a5484d05d6e020547876227d5d4337045687790f43c734",
+      "symbols": [
+        "extent_gap",
+        "anchor_parts",
+        "loss_terms"
+      ]
+    },
+    {
+      "source": "outputs/ped2023_native_objective_20261008/replay.py",
+      "sha256": "c44379dc6d655b4a8a4288f5b7f71bd0f10b4028ca1c0d9848cdb405e3247055",
+      "symbols": [
+        "Layout",
+        "native_layout",
+        "native_forward",
+        "objective",
+        "fused_adjoint",
+        "replay_fused",
+        "viewwise_loss",
+        "replay_viewwise"
+      ]
+    },
+    {
+      "source": "artifacts/experiments/BraTS_PED2023_norm_TTA_20261006/native_adapter.py",
+      "sha256": "4ff1ff62ce64c9534fd73ad3f564495abdcab017c3449dba221bb53f1d777c7c",
+      "symbols": [
+        "state_sha",
+        "load_predictor"
+      ]
+    }
+  ],
+  "changes": [
+    "Explicit local imports replace experiment import chains.",
+    "loss_terms defaults to extent, as in the native objective.",
+    "nnunet imports are lazy; predictor device is explicit, CUDA remains default.",
+    "No algorithm constants, class mapping or output precision changed."
+  ]
+}

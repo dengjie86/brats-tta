@@ -1,1 +1,8 @@
-*.sh text eol=lf
+* text=auto
+
+# Preserve provenance bytes in frozen numerical references and research records.
+/src/brats_tta/native/** -text
+/tests/reference/tta_pipeline/** -text
+/docs/archive/** -text
+/docs/*.md -text
+/docs/figures/** -text

@@ -1,0 +1,25 @@
+{
+  "frozen_sources": {
+    "outputs/senior188_ped2023_ours_20261021/frozen_projection.py": "6b645d4004e300f48a67624bb722e661688ac1dbf5acf3bbe682d92a926b629e",
+    "outputs/senior188_ped2023_ours_20261021/frozen_pool.py": "d3a711bbcedba2bb95eedafa42aab58938c99fc3a4290d202e560b97f9d3c1af",
+    "outputs/senior188_ped2023_ours_20261021/frozen_filter.py": "343222699de6822863ef7623d77a4d47e6f58509c2373eb805d2e94fd5041aa0",
+    "outputs/senior188_ped2023_ours_20261021/frozen_guard.py": "6c2da149dadc5c8b90d4f179d71c53ecc9d9e8a9484c0f3da43fed24ce8793d3",
+    "outputs/senior188_ped2023_ours_20261021/teacher_rules.py": "0ddd93bf24d9ce9dd2fc8b5bc307edd5372db299d19c1b518fd5875cbb220261",
+    "outputs/senior188_ped2023_ours_20261021/model.py": "acfa54a3b2a20bf94c69412bc080146f682056056d7ffd32e9a7c82460bac2dd",
+    "outputs/senior188_ped2023_ours_20261021/decoder.py": "d3eb596ca64dd4252c5126a7aea2ed9a8b4d0cdd80ffa00bd7a3ce149fe641dc",
+    "outputs/senior188_ped2023_ours_20261021/senior.py": "e131acbac0516f24613122d71817d4a6d09b6b2430577438eae4c536725b669c",
+    "outputs/senior188_ped2023_ours_20261021/learning.py": "ca6c1db183b33c1728017e7e55027805ae40334a25f482813962a45781bbce66",
+    "outputs/ped2023_efficiency_full98_20261016/union2_single_view8/single_view.py": "b84b421d9dd932befb2cdd5789d2d84c3786b7c6b64c636ec985be53ef3c896c",
+    "outputs/ped2023_efficiency_pilot_20261016/attempt03/study.py": "d58104d2bb2da170029cc9e03ef820aae31f330f736fb830718c418566a552df",
+    "src/brats_tta/native/adaptation.py": "1c783a1b773a7c2a729721837d29988305748a552ca3e21b5cb855b8f77abc8f",
+    "src/brats_tta/native/context.py": "31facd5a2ef14f1d5b79b2f1b04897a76bce64f8b65268748ac76aa33e378289",
+    "src/brats_tta/native/controls.py": "05f693c1b81fdd8cc5524e0cb8c7010c00448389c83217787ca180b26547281d",
+    "src/brats_tta/native/coordinates.py": "64d5e8bca6773925be7285e1f1a0dff79af304f1d65f637b3398c3e0c1abf248",
+    "src/brats_tta/native/efficient.py": "3f6f5e2c6e76b740fb5a7869122d81284d8f06cb30f492c48a7d04df10e67326",
+    "src/brats_tta/native/predictor.py": "3edab586d4d83a6ad61465ae6b44f16c0bc642ae72cb222bccaf959ac012e0b7",
+    "src/brats_tta/native/replay.py": "99ad0400ff6f11256b731f89d00b16b7cfd18a49882e32ef4ed5b5a84ef850d5",
+    "src/brats_tta/native/__init__.py": "d24a3c25de0d90327976afe091ca57a300f3bad87fd28149e27015f23199a48f"
+  },
+  "boundary": "No production runtime imports of dated experiments. Original files unchanged.",
+  "changes": "Pure functions moved with package-local imports. I/O and episode orchestration separated."
+}
