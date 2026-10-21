@@ -9,8 +9,35 @@ venv/
 build/
 dist/
 
-# Experiment artifacts and medical images
-/outputs/
+# Local experiment payloads stay ignored. Reopen directories for the narrow
+# research-code allowlist below; this does not include arrays or checkpoints.
+/outputs/**
+!/outputs/**/
+!/outputs/README.md
+!/outputs/ped2023_*/**/*.py
+!/outputs/ped2023_*/**/*.ps1
+!/outputs/ped2023_*/**/*.sh
+!/outputs/ped2023_*/**/PROTOCOL.md
+!/outputs/senior188_*/**/*.py
+!/outputs/senior188_*/**/*.ps1
+!/outputs/senior188_*/**/PROTOCOL.md
+!/outputs/qq_unet125_ped2023_source_tent_20261019/**/*.py
+!/outputs/qq_unet125_ped2023_source_tent_20261019/**/*.ps1
+!/outputs/qq_unet125_ped2023_source_tent_20261019/**/PROTOCOL.md
+/artifacts/**
+!/artifacts/**/
+!/artifacts/experiments/BraTS_PED2023*/**/*.py
+!/artifacts/experiments/BraTS_PED2023*/**/*.ps1
+!/artifacts/experiments/BraTS_PED2023*/**/*.sh
+!/artifacts/experiments/BraTS_PED2023*/**/PROTOCOL.md
+!/artifacts/experiments/HD_TTA_PED2023*/**/*.py
+!/artifacts/experiments/HD_TTA_PED2023*/**/*.ps1
+!/artifacts/experiments/HD_TTA_PED2023*/**/*.sh
+!/artifacts/experiments/HD_TTA_PED2023*/**/PROTOCOL.md
+# Never make failure copies or interpreter caches part of the source snapshot.
+/outputs/**/startup_failures/
+/outputs/**/__pycache__/
+/artifacts/**/__pycache__/
 /checkpoints/
 /logs/
 /data/
@@ -26,3 +53,5 @@ dist/
 .playwright-cli/
 .DS_Store
 Thumbs.db
+.env
+.env.*

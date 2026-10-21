@@ -1,0 +1,74 @@
+# Navigation metadata only. Scientific parameters stay in each frozen protocol.
+# Status is a recorded snapshot, never a live monitor or launch authorization.
+schema_version: 1
+experiments:
+  - id: native-in250-main
+    title: IN250 原主方法的最终缓存重放
+    model: native nnU-Net IN250
+    status: completed
+    recorded_on: '2026-10-22'
+    planned_cases: 98
+    completed_cases: 98
+    entry_kind: cache_replay
+    note: 已有缓存的重放入口；不是新 MRI 的完整推理命令。
+    paths:
+      directory: outputs/ped2023_teacher_complement_full98_20261015/decoder_pruning/final_controls/delivery
+      entrypoint: outputs/ped2023_teacher_complement_full98_20261015/decoder_pruning/final_controls/delivery/replay_main.py
+      protocol: docs/GLI_PED_TTA_METHOD.md
+      report: outputs/ped2023_teacher_complement_full98_20261015/decoder_pruning/final_controls/INTERPRETATION.md
+  - id: native-in250-single-view8
+    title: IN250 union2 单视角八步适应
+    model: native nnU-Net IN250
+    status: completed
+    recorded_on: '2026-10-22'
+    planned_cases: 98
+    completed_cases: 98
+    entry_kind: frozen_runner
+    note: 保留八镜像 teacher/输出，仅学习用单视角；冻结 runner 仍有历史导入链。
+    paths:
+      directory: outputs/ped2023_efficiency_full98_20261016/union2_single_view8
+      entrypoint: outputs/ped2023_efficiency_full98_20261016/union2_single_view8/single_view.py
+      protocol: outputs/ped2023_efficiency_full98_20261016/union2_single_view8/PROTOCOL.md
+      report: outputs/ped2023_efficiency_full98_20261016/union2_single_view8/REPORT.md
+  - id: senior188-source-tent
+    title: Senior188 Source 与 TENT 对照
+    model: Senior BN U-Net best188
+    status: completed
+    recorded_on: '2026-10-22'
+    planned_cases: 98
+    completed_cases: 98
+    entry_kind: frozen_runner
+    note: 原始网格、Gaussian 概率融合、无镜像；不套用 native 预处理。
+    paths:
+      directory: outputs/senior188_ped2023_source_tent_20261021
+      entrypoint: outputs/senior188_ped2023_source_tent_20261021/study.py
+      protocol: outputs/senior188_ped2023_source_tent_20261021/PROTOCOL.md
+      report: outputs/senior188_ped2023_source_tent_20261021/REPORT.md
+  - id: senior188-ours
+    title: Senior188 union2 + soft_extent + no_come
+    model: Senior BN U-Net best188
+    status: paused
+    recorded_on: '2026-10-22'
+    planned_cases: 98
+    completed_cases: 66
+    entry_kind: frozen_runner
+    note: 用户叫停；不得因登记或检查而恢复。完整诊断见 HANDOFF。
+    paths:
+      directory: outputs/senior188_ped2023_ours_20261021
+      entrypoint: outputs/senior188_ped2023_ours_20261021/study.py
+      protocol: outputs/senior188_ped2023_ours_20261021/PROTOCOL.md
+      report: outputs/senior188_ped2023_ours_20261021/README.md
+  - id: qq125-source-tent
+    title: QQ125 Source 与 TENT 对照
+    model: QQ BN U-Net epoch125
+    status: completed
+    recorded_on: '2026-10-22'
+    planned_cases: 98
+    completed_cases: 98
+    entry_kind: frozen_runner
+    note: 保留该模型自己的模态、预处理和推理约定；与 Senior 不是只换权重。
+    paths:
+      directory: outputs/qq_unet125_ped2023_source_tent_20261019
+      entrypoint: outputs/qq_unet125_ped2023_source_tent_20261019/study.py
+      protocol: outputs/qq_unet125_ped2023_source_tent_20261019/PROTOCOL.md
+      report: outputs/qq_unet125_ped2023_source_tent_20261019/REPORT.md

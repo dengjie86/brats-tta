@@ -1,0 +1,12 @@
+# Repository-relative paths follow the checkout location. External data stays put.
+# Override this file with --config, or set BRATS_TTA_ROOT for an installed package.
+source_in: artifacts/models/in_dicece/run/nnUNet_results/Dataset503_BraTS_Classes/nnUNetTrainerBraTS250__nnUNetPlans__3d_fullres
+source_bn: artifacts/models/bn_dicece/run/nnUNet_results/Dataset503_BraTS_Classes/nnUNetTrainerBraTSBN250__nnUNetPlans__3d_fullres
+source_wt: artifacts/models/in_dicece/run/nnUNet_results/Dataset502_BraTS_Binary/nnUNetTrainerBraTS250__nnUNetPlans__3d_fullres
+source_wt_dice: artifacts/models/wt_pure_dice/run/nnUNet_results/Dataset502_BraTS_Binary/nnUNetTrainerBraTSDice250__nnUNetPlans__3d_fullres
+legacy_source: artifacts/models/legacy_custom_bn/source_training/run/checkpoints/best.pt
+ped2023: E:/dataset/BraTS_PED_2023_Kaggle
+gli_zip: D:/Downloads/Zip/ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData.zip
+outputs: outputs
+source_cache: artifacts/experiments/BraTS_PED2023_axis_probe_20261006
+context_results: outputs/ped2023_context_full99_20261008

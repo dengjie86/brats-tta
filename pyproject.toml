@@ -27,6 +27,10 @@ tensorboard = ["tensorboard>=2.15"]
 brain-extraction = ["HD-BET==2.0.1", "nnunetv2==2.6.2"]
 
 [project.scripts]
+brats-project = "brats_tta.cli.project:main"
+brats-experiments = "brats_tta.cli.experiments:main"
+brats-adapt-context = "brats_tta.cli.adapt_context:main"
+brats-context-teacher = "brats_tta.cli.context_teacher:main"
 brats-prepare-manifest = "brats_tta.cli.prepare_manifest:main"
 brats-preprocess = "brats_tta.cli.preprocess:main"
 brats-extract-brain-masks = "brats_tta.cli.extract_brain_masks:main"
@@ -43,6 +47,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"brats_tta.pipeline" = ["ORIGIN.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

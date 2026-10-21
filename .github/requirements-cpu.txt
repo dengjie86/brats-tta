@@ -1,0 +1,7 @@
+# Versions observed in cv311 on 2026-10-22; CPU torch is installed in ci.yml.
+numpy==2.4.3
+scipy==1.17.1
+nibabel==5.4.2
+PyYAML==6.0.3
+pytest==9.1.1
+ruff==0.16.8
